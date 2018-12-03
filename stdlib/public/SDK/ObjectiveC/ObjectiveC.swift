@@ -205,34 +205,34 @@ extension NSObject : Equatable, Hashable {
 
   /// The hash value.
   ///
-  /// `NSObject` implements this by returning `self.hash`.
-  ///
-  /// `NSObject.hashValue` is not overridable; subclasses can customize hashing
-  /// by overriding the `hash` property.
+  /// `NSObject` implements this by returning `self.hash`. Subclasses can
+  /// customize hashing by overriding the `hash` property.
   ///
   /// **Axiom:** `x == y` implies `x.hashValue == y.hashValue`
   ///
   /// - Note: the hash value is not guaranteed to be stable across
   ///   different invocations of the same program.  Do not persist the
   ///   hash value across program runs.
-  @nonobjc
-  public var hashValue: Int {
+  @objc open // FIXME: Should be @nonobjc public. rdar://problem/42623458
+  var hashValue: Int {
     return hash
   }
 
   /// Hashes the essential components of this value by feeding them into the
   /// given hasher.
   ///
-  /// NSObject implements this by feeding `self.hash` to the hasher.
-  ///
-  /// `NSObject.hash(into:)` is not overridable; subclasses can customize
-  /// hashing by overriding the `hash` property.
+  /// NSObject implements this by feeding `self.hash` to the hasher. Subclasses
+  /// can customize hashing by overriding the `hash` property.
   public func hash(into hasher: inout Hasher) {
-    hasher.combine(self.hash)
+    // FIXME: We should combine self.hash here, but hashValue is currently
+    // overridable.
+    hasher.combine(hashValue)
   }
 
   public func _rawHashValue(seed: Int) -> Int {
-    return self.hash._rawHashValue(seed: seed)
+    // FIXME: We should use self.hash here, but hashValue is currently
+    // overridable.
+    return self.hashValue._rawHashValue(seed: seed)
   }
 }
 
