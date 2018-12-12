@@ -1,8 +1,5 @@
 if(SWIFT_ENABLE_TENSORFLOW)
   find_package(TensorFlow REQUIRED)
-  if (TF_PATH_ADJUSTMENT)
-    include_directories(BEFORE "${TF_INCLUDE_DIR}/${TF_PATH_ADJUSTMENT}")
-  endif()
   include_directories(BEFORE "${TF_INCLUDE_DIR}")
 endif()
 
