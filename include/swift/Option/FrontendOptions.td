@@ -310,9 +310,6 @@ def disable_guaranteed_normal_arguments : Flag<["-"], "disable-guaranteed-normal
 def enable_mandatory_semantic_arc_opts : Flag<["-"], "enable-mandatory-semantic-arc-opts">,
   HelpText<"Enable the mandatory semantic arc optimizer">;
 
-def assume_parsing_unqualified_ownership_sil : Flag<["-"], "assume-parsing-unqualified-ownership-sil">,
-  HelpText<"Assume unqualified SIL ownership when parsing SIL">;
-
 def suppress_static_exclusivity_swap : Flag<["-"], "suppress-static-exclusivity-swap">,
   HelpText<"Suppress static violations of exclusive access with swap()">;
 
@@ -326,10 +323,6 @@ def enable_experimental_static_assert :
   Flag<["-"], "enable-experimental-static-assert">,
   HelpText<"Enable experimental #assert">;
 
-def enable_experimental_property_behaviors :
-  Flag<["-"], "enable-experimental-property-behaviors">,
-  HelpText<"Enable experimental property behaviors">;
-  
 def enable_deserialization_recovery :
   Flag<["-"], "enable-deserialization-recovery">,
   HelpText<"Attempt to recover from missing xrefs (etc) in swiftmodules">;
@@ -516,6 +509,18 @@ def index_system_modules : Flag<["-"], "index-system-modules">,
 def dump_interface_hash : Flag<["-"], "dump-interface-hash">,
    HelpText<"Parse input file(s) and dump interface token hash(es)">,
    ModeOpt;
+
+def build_module_from_parseable_interface :
+  Flag<["-"], "build-module-from-parseable-interface">,
+  HelpText<"Treat the (single) input as a swiftinterface and produce a module">,
+  ModeOpt;
+
+def prebuilt_module_cache_path :
+  Separate<["-"], "prebuilt-module-cache-path">,
+  HelpText<"Directory of prebuilt modules for loading parseable interfaces">;
+def prebuilt_module_cache_path_EQ :
+  Joined<["-"], "prebuilt-module-cache-path=">,
+  Alias<prebuilt_module_cache_path>;
 
 def enable_resilience_bypass : Flag<["-"], "enable-resilience-bypass">,
    HelpText<"Completely bypass resilience when accessing types in resilient frameworks">;

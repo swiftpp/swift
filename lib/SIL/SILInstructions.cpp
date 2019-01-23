@@ -314,16 +314,6 @@ VarDecl *DebugValueAddrInst::getDecl() const {
   return getLoc().getAsASTNode<VarDecl>();
 }
 
-static void declareWitnessTable(SILModule &Mod,
-                                ProtocolConformanceRef conformanceRef) {
-  if (conformanceRef.isAbstract()) return;
-  auto C = conformanceRef.getConcrete();
-  if (!Mod.lookUpWitnessTable(C, false))
-    Mod.createWitnessTableDeclaration(C,
-        getLinkageForProtocolConformance(C->getRootNormalConformance(),
-                                         NotForDefinition));
-}
-
 AllocExistentialBoxInst *AllocExistentialBoxInst::create(
     SILDebugLocation Loc, SILType ExistentialType, CanType ConcreteType,
     ArrayRef<ProtocolConformanceRef> Conformances,
@@ -335,8 +325,6 @@ AllocExistentialBoxInst *AllocExistentialBoxInst::create(
   SILModule &Mod = F->getModule();
   auto Size = totalSizeToAlloc<swift::Operand>(TypeDependentOperands.size());
   auto Buffer = Mod.allocateInst(Size, alignof(AllocExistentialBoxInst));
-  for (ProtocolConformanceRef C : Conformances)
-    declareWitnessTable(Mod, C);
   return ::new (Buffer) AllocExistentialBoxInst(Loc,
                                                 ExistentialType,
                                                 ConcreteType,
@@ -485,7 +473,7 @@ BeginApplyInst::create(SILDebugLocation loc, SILValue callee,
   }
 
   resultTypes.push_back(SILType::getSILTokenType(F.getASTContext()));
-  resultOwnerships.push_back(ValueOwnershipKind::Trivial);
+  resultOwnerships.push_back(ValueOwnershipKind::Any);
 
   SmallVector<SILValue, 32> typeDependentOperands;
   collectTypeDependentOperands(typeDependentOperands, openedArchetypes, F,
@@ -517,19 +505,19 @@ PartialApplyInst::PartialApplyInst(
     // PartialApplyInst
     // should derive the type of its result by partially applying the callee's
     // type.
-    : InstructionBase(Loc, Callee, SubstCalleeTy, Subs,
-                      Args, TypeDependentOperands, SpecializationInfo,
-                      ClosureType) {}
+    : InstructionBase(Loc, Callee, SubstCalleeTy, Subs, Args,
+                      TypeDependentOperands, SpecializationInfo, ClosureType) {}
 
 PartialApplyInst *PartialApplyInst::create(
     SILDebugLocation Loc, SILValue Callee, ArrayRef<SILValue> Args,
     SubstitutionMap Subs, ParameterConvention CalleeConvention, SILFunction &F,
     SILOpenedArchetypesState &OpenedArchetypes,
-    const GenericSpecializationInformation *SpecializationInfo) {
+    const GenericSpecializationInformation *SpecializationInfo,
+    OnStackKind onStack) {
   SILType SubstCalleeTy =
       Callee->getType().substGenericArgs(F.getModule(), Subs);
   SILType ClosureType = SILBuilder::getPartialApplyResultType(
-      SubstCalleeTy, Args.size(), F.getModule(), {}, CalleeConvention);
+      SubstCalleeTy, Args.size(), F.getModule(), {}, CalleeConvention, onStack);
 
   SmallVector<SILValue, 32> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
@@ -1760,7 +1748,6 @@ WitnessMethodInst::create(SILDebugLocation Loc, CanType LookupType,
   auto Size = totalSizeToAlloc<swift::Operand>(TypeDependentOperands.size());
   auto Buffer = Mod.allocateInst(Size, alignof(WitnessMethodInst));
 
-  declareWitnessTable(Mod, Conformance);
   return ::new (Buffer) WitnessMethodInst(Loc, LookupType, Conformance, Member,
                                           Ty, TypeDependentOperands);
 }
@@ -1794,8 +1781,6 @@ InitExistentialAddrInst *InitExistentialAddrInst::create(
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer = Mod.allocateInst(size,
                                   alignof(InitExistentialAddrInst));
-  for (ProtocolConformanceRef C : Conformances)
-    declareWitnessTable(Mod, C);
   return ::new (Buffer) InitExistentialAddrInst(Loc, Existential,
                                                 TypeDependentOperands,
                                                 ConcreteType,
@@ -1815,9 +1800,6 @@ InitExistentialValueInst *InitExistentialValueInst::create(
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
 
   void *Buffer = Mod.allocateInst(size, alignof(InitExistentialRefInst));
-  for (ProtocolConformanceRef C : Conformances)
-    declareWitnessTable(Mod, C);
-
   return ::new (Buffer)
       InitExistentialValueInst(Loc, ExistentialType, ConcreteType, Instance,
                                 TypeDependentOperands, Conformances);
@@ -1838,9 +1820,6 @@ InitExistentialRefInst::create(SILDebugLocation Loc, SILType ExistentialType,
 
   void *Buffer = Mod.allocateInst(size,
                                   alignof(InitExistentialRefInst));
-  for (ProtocolConformanceRef C : Conformances)
-    declareWitnessTable(Mod, C);
-
   return ::new (Buffer) InitExistentialRefInst(Loc, ExistentialType,
                                                ConcreteType,
                                                Instance,
@@ -1873,9 +1852,6 @@ InitExistentialMetatypeInst *InitExistentialMetatypeInst::create(
       1 + TypeDependentOperands.size(), conformances.size());
 
   void *buffer = M.allocateInst(size, alignof(InitExistentialMetatypeInst));
-  for (ProtocolConformanceRef conformance : conformances)
-    declareWitnessTable(M, conformance);
-
   return ::new (buffer) InitExistentialMetatypeInst(
       Loc, existentialMetatypeType, metatype,
       TypeDependentOperands, conformances);
@@ -1884,42 +1860,6 @@ InitExistentialMetatypeInst *InitExistentialMetatypeInst::create(
 ArrayRef<ProtocolConformanceRef>
 InitExistentialMetatypeInst::getConformances() const {
   return {getTrailingObjects<ProtocolConformanceRef>(), NumConformances};
-}
-
-MarkUninitializedBehaviorInst *
-MarkUninitializedBehaviorInst::create(SILModule &M,
-                                      SILDebugLocation DebugLoc,
-                                      SILValue InitStorage,
-                                      SubstitutionMap InitStorageSubs,
-                                      SILValue Storage,
-                                      SILValue Setter,
-                                      SubstitutionMap SetterSubs,
-                                      SILValue Self,
-                                      SILType Ty) {
-  auto mem = M.allocateInst(sizeof(MarkUninitializedBehaviorInst),
-                            alignof(MarkUninitializedBehaviorInst));
-  return ::new (mem) MarkUninitializedBehaviorInst(DebugLoc,
-                                                   InitStorage, InitStorageSubs,
-                                                   Storage,
-                                                   Setter, SetterSubs,
-                                                   Self,
-                                                   Ty);
-}
-
-MarkUninitializedBehaviorInst::MarkUninitializedBehaviorInst(
-                                        SILDebugLocation DebugLoc,
-                                        SILValue InitStorage,
-                                        SubstitutionMap InitStorageSubs,
-                                        SILValue Storage,
-                                        SILValue Setter,
-                                        SubstitutionMap SetterSubs,
-                                        SILValue Self,
-                                        SILType Ty)
-  : InstructionBase(DebugLoc, Ty),
-    Operands(this, InitStorage, Storage, Setter, Self),
-    InitStorageSubstitutions(InitStorageSubs),
-    SetterSubstitutions(SetterSubs)
-{
 }
 
 OpenedExistentialAccess swift::getOpenedExistentialAccessFor(AccessKind access) {
@@ -2180,8 +2120,7 @@ ConvertFunctionInst *ConvertFunctionInst::create(
 
 ConvertEscapeToNoEscapeInst *ConvertEscapeToNoEscapeInst::create(
     SILDebugLocation DebugLoc, SILValue Operand, SILType Ty, SILFunction &F,
-    SILOpenedArchetypesState &OpenedArchetypes, bool isEscapedByUser,
-    bool isLifetimeGuaranteed) {
+    SILOpenedArchetypesState &OpenedArchetypes, bool isLifetimeGuaranteed) {
   SILModule &Mod = F.getModule();
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
@@ -2189,9 +2128,8 @@ ConvertEscapeToNoEscapeInst *ConvertEscapeToNoEscapeInst::create(
   unsigned size =
     totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer = Mod.allocateInst(size, alignof(ConvertEscapeToNoEscapeInst));
-  auto *CFI = ::new (Buffer)
-      ConvertEscapeToNoEscapeInst(DebugLoc, Operand, TypeDependentOperands, Ty,
-                                  isEscapedByUser, isLifetimeGuaranteed);
+  auto *CFI = ::new (Buffer) ConvertEscapeToNoEscapeInst(
+      DebugLoc, Operand, TypeDependentOperands, Ty, isLifetimeGuaranteed);
   // If we do not have lowered SIL, make sure that are not performing
   // ABI-incompatible conversions.
   //

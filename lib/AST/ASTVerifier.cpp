@@ -189,7 +189,7 @@ struct LazyGenericEnvironment {
     return false;
   }
 
-  bool containsPrimaryArchetype(ArchetypeType *archetype) const {
+  bool containsPrimaryArchetype(PrimaryArchetypeType *archetype) const {
     // Assume true so we don't deserialize.
     if (isLazy()) return true;
 
@@ -222,25 +222,25 @@ class Verifier : public ASTWalker {
   const bool HadError;
   SmallVector<bool, 8> InImplicitBraceStmt;
 
-  /// \brief The stack of functions we're visiting.
+  /// The stack of functions we're visiting.
   SmallVector<DeclContext *, 4> Functions;
 
-  /// \brief The stack of scopes we're visiting.
+  /// The stack of scopes we're visiting.
   using ScopeLike = llvm::PointerUnion<DeclContext *, BraceStmt *>;
   SmallVector<ScopeLike, 4> Scopes;
 
   /// The stack of generic environments.
   SmallVector<LazyGenericEnvironment, 2> GenericEnv;
 
-  /// \brief The stack of optional evaluations active at this point.
+  /// The stack of optional evaluations active at this point.
   SmallVector<OptionalEvaluationExpr *, 4> OptionalEvaluations;
 
-  /// \brief The set of opaque value expressions active at this point.
+  /// The set of opaque value expressions active at this point.
   llvm::DenseMap<OpaqueValueExpr *, unsigned> OpaqueValues;
 
   /// The set of opened existential archetypes that are currently
   /// active.
-  llvm::DenseSet<ArchetypeType *> OpenedExistentialArchetypes;
+  llvm::DenseSet<OpenedArchetypeType *> OpenedExistentialArchetypes;
 
   /// The set of inout to pointer expr that match the following pattern:
   ///
@@ -627,8 +627,8 @@ public:
 
           // We should know about archetypes corresponding to opened
           // existential archetypes.
-          if (archetype->getOpenedExistentialType()) {
-            if (OpenedExistentialArchetypes.count(archetype) == 0) {
+          if (auto opened = dyn_cast<OpenedArchetypeType>(archetype)) {
+            if (OpenedExistentialArchetypes.count(opened) == 0) {
               Out << "Found opened existential archetype "
                   << archetype->getString()
                   << " outside enclosing OpenExistentialExpr\n";
@@ -750,6 +750,7 @@ public:
     FUNCTION_LIKE(ConstructorDecl)
     FUNCTION_LIKE(DestructorDecl)
     FUNCTION_LIKE(FuncDecl)
+    FUNCTION_LIKE(EnumElementDecl)
     SCOPE_LIKE(NominalTypeDecl)
     SCOPE_LIKE(ExtensionDecl)
 
@@ -869,7 +870,8 @@ public:
 
       if (D->hasAccess()) {
         PrettyStackTraceDecl debugStack("verifying access", D);
-        if (D->getFormalAccessScope().isPublic() &&
+        if (!D->getASTContext().isAccessControlDisabled() &&
+            D->getFormalAccessScope().isPublic() &&
             D->getFormalAccess() < AccessLevel::Public) {
           Out << "non-public decl has no formal access scope\n";
           D->dump(Out);
@@ -996,7 +998,7 @@ public:
       case StmtConditionElement::CK_Boolean: {
         auto *E = elt.getBoolean();
         if (shouldVerifyChecked(E))
-          checkSameType(E->getType(), BuiltinIntegerType::get(1, Ctx),
+          checkSameType(E->getType(), Ctx.getBoolDecl()->getDeclaredType(),
                         "condition type");
         break;
       }
@@ -2070,8 +2072,8 @@ public:
       PrettyStackTraceExpr debugStack(Ctx, "verifying IfExpr", E);
 
       auto condTy = E->getCondExpr()->getType();
-      if (!condTy->isBuiltinIntegerType(1)) {
-        Out << "IfExpr condition is not an i1\n";
+      if (!condTy->isBool()) {
+        Out << "IfExpr condition is not Bool\n";
         abort();
       }
 
@@ -2762,7 +2764,14 @@ public:
         abort();
       }
 
-      unsigned currentDepth = paramList->getDepth();
+      if (paramList->getOuterParameters() &&
+          !isa<ExtensionDecl>(DC)) {
+        Out << "GenericParamList can only have outer parameters in an "
+               "extension\n";
+        abort();
+      }
+
+      unsigned currentDepth = DC->getGenericContextDepth();
       if (currentDepth < GTPD->getDepth()) {
         Out << "GenericTypeParamDecl has incorrect depth\n";
         abort();
@@ -3580,7 +3589,7 @@ public:
                         [&]{ D->print(Out); });
     }
 
-    /// \brief Verify that the given source ranges is contained within the
+    /// Verify that the given source ranges is contained within the
     /// parent's source range.
     void checkSourceRanges(SourceRange Current, ASTWalker::ParentTy Parent,
                            llvm::function_ref<void()> printEntity) {

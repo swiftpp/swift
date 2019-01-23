@@ -404,7 +404,7 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
       (unsigned)F.getOptimizationMode(), (unsigned)F.getEffectsKind(),
       // SWIFT_ENABLE_TENSORFLOW
       (unsigned)numSpecAttrs, (unsigned)numDiffAttrs,
-      (unsigned)F.hasQualifiedOwnership(),
+      (unsigned)F.hasOwnership(),
       F.isWeakLinked(), (unsigned)F.isDynamicallyReplaceable(), FnID,
       replacedFunctionID, genericEnvID, clangNodeOwnerID, SemanticsIDs);
 
@@ -1571,8 +1571,6 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
     if (SI.getKind() == SILInstructionKind::ConvertEscapeToNoEscapeInst) {
       if (cast<ConvertEscapeToNoEscapeInst>(SI).isLifetimeGuaranteed())
         attrs |= 0x01;
-      if (cast<ConvertEscapeToNoEscapeInst>(SI).isEscapedByUser())
-        attrs |= 0x02;
     }
     if (SI.getKind() == SILInstructionKind::ConvertFunctionInst) {
       if (cast<ConvertFunctionInst>(SI).withoutActuallyEscaping())
@@ -2172,8 +2170,6 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
 
     break;
   }
-  case SILInstructionKind::MarkUninitializedBehaviorInst:
-    llvm_unreachable("todo");
   }
   // Non-void values get registered in the value table.
   for (auto result : SI.getResults()) {

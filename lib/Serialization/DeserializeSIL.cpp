@@ -697,7 +697,7 @@ SILDeserializer::readSILFunctionChecked(DeclID FID, SILFunction *existingFn,
   }
 
   if (!hasQualifiedOwnership)
-    fn->setUnqualifiedOwnership();
+    fn->setOwnershipEliminated();
 
   NumDeserializedFunc++;
 
@@ -1062,8 +1062,8 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
     break;
   case SIL_INST_APPLY: {
     unsigned IsPartial;
-    SILInstApplyLayout::readRecord(scratch, IsPartial, NumSubs,
-                                   TyID, TyID2, ValID, ListOfValues);
+    SILInstApplyLayout::readRecord(scratch, IsPartial, NumSubs, TyID, TyID2,
+                                   ValID, ListOfValues);
     switch (IsPartial) {
     case SIL_APPLY:
       RawOpCode = (unsigned)SILInstructionKind::ApplyInst;
@@ -1237,12 +1237,11 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
     assert(RecordKind == SIL_ONE_TYPE_ONE_OPERAND &&
            "Layout should be OneTypeOneOperand.");
     bool isLifetimeGuaranteed = Attr & 0x01;
-    bool isEscaped = Attr & 0x02;
     ResultVal = Builder.createConvertEscapeToNoEscape(
         Loc,
         getLocalValue(ValID, getSILType(MF->getType(TyID2),
                                         (SILValueCategory)TyCategory2)),
-        getSILType(MF->getType(TyID), (SILValueCategory)TyCategory), isEscaped,
+        getSILType(MF->getType(TyID), (SILValueCategory)TyCategory),
         isLifetimeGuaranteed);
     break;
   }
@@ -1474,11 +1473,13 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
     for (unsigned I = 0, E = ListOfValues.size(); I < E; I++)
       Args.push_back(getLocalValue(
           ListOfValues[I], fnConv.getSILArgumentType(I + unappliedArgs)));
-
+    auto onStack = closureTy.castTo<SILFunctionType>()->isNoEscape()
+                       ? PartialApplyInst::OnStackKind::OnStack
+                       : PartialApplyInst::OnStackKind::NotOnStack;
     // FIXME: Why the arbitrary order difference in IRBuilder type argument?
     ResultVal = Builder.createPartialApply(
         Loc, FnVal, Substitutions, Args,
-        closureTy.castTo<SILFunctionType>()->getCalleeConvention());
+        closureTy.castTo<SILFunctionType>()->getCalleeConvention(), onStack);
     break;
   }
   case SILInstructionKind::BuiltinInst: {
@@ -2548,8 +2549,6 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
     ResultVal = Builder.createKeyPath(Loc, pattern, subMap, operands, kpTy);
     break;
   }
-  case SILInstructionKind::MarkUninitializedBehaviorInst:
-    llvm_unreachable("todo");
   }
 
   for (auto result : ResultVal->getResults()) {

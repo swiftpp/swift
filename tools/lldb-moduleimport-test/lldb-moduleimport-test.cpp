@@ -212,7 +212,12 @@ int main(int argc, char **argv) {
       desc("The directory that holds the compiler resource files"),
       cat(Visible));
 
+  opt<bool> EnableDWARFImporter(
+      "enable-dwarf-importer",
+      desc("Import with LangOptions.EnableDWARFImporter = true"), cat(Visible));
+
   ParseCommandLineOptions(argc, argv);
+
   // Unregister our options so they don't interfere with the command line
   // parsing in CodeGen/BackendUtil.cpp.
   ModuleCachePath.removeArgument();
@@ -224,7 +229,7 @@ int main(int argc, char **argv) {
     if (Filename.empty())
       return true;
     if (!llvm::sys::fs::exists(llvm::Twine(Filename))) {
-      llvm::errs() << Filename << " does not exists, exiting.\n";
+      llvm::errs() << Filename << " does not exist, exiting.\n";
       return false;
     }
     if (!llvm::sys::fs::is_regular_file(llvm::Twine(Filename))) {
@@ -273,6 +278,7 @@ int main(int argc, char **argv) {
 
   Invocation.setModuleName("lldbtest");
   Invocation.getClangImporterOptions().ModuleCachePath = ModuleCachePath;
+  Invocation.getLangOptions().EnableDWARFImporter = EnableDWARFImporter;
 
   if (!ResourceDir.empty()) {
     Invocation.setRuntimeResourcePath(ResourceDir);

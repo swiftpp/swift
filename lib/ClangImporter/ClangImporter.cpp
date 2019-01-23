@@ -541,6 +541,25 @@ getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
       });
     }
 
+    if (triple.isOSWindows()) {
+      switch (triple.getArch()) {
+      default: llvm_unreachable("unsupported Windows architecture");
+      case llvm::Triple::arm:
+      case llvm::Triple::thumb:
+        invocationArgStrs.insert(invocationArgStrs.end(), {"-D_ARM_"});
+        break;
+      case llvm::Triple::aarch64:
+        invocationArgStrs.insert(invocationArgStrs.end(), {"-D_ARM64_"});
+        break;
+      case llvm::Triple::x86:
+        invocationArgStrs.insert(invocationArgStrs.end(), {"-D_X86_"});
+        break;
+      case llvm::Triple::x86_64:
+        invocationArgStrs.insert(invocationArgStrs.end(), {"-D_AMD64_"});
+        break;
+      }
+    }
+
     // The module map used for Glibc depends on the target we're compiling for,
     // and is not included in the resource directory with the other implicit
     // module maps. It's at {freebsd|linux}/{arch}/glibc.modulemap.
@@ -626,10 +645,12 @@ getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
 
   // Enable API notes alongside headers/in frameworks.
   invocationArgStrs.push_back("-fapinotes-modules");
-  invocationArgStrs.push_back("-iapinotes-modules");
-  invocationArgStrs.push_back(searchPathOpts.RuntimeLibraryImportPath);
   invocationArgStrs.push_back("-fapinotes-swift-version=" +
-      languageVersion.asAPINotesVersionString());
+                              languageVersion.asAPINotesVersionString());
+  invocationArgStrs.push_back("-iapinotes-modules");
+  invocationArgStrs.push_back((llvm::Twine(searchPathOpts.RuntimeResourcePath) +
+                               llvm::sys::path::get_separator() +
+                               "apinotes").str());
 }
 
 static void
@@ -1158,6 +1179,14 @@ ClangImporter::Implementation::getNextIncludeLoc() {
   if (!DummyIncludeBuffer.isValid()) {
     clang::SourceLocation includeLoc =
         srcMgr.getLocForStartOfFile(srcMgr.getMainFileID());
+    // Picking the beginning of the main FileID as include location is also what
+    // the clang PCH mechanism is doing (see
+    // clang::ASTReader::getImportLocation()). Choose the next source location
+    // here to avoid having the exact same import location as the clang PCH.
+    // Otherwise, if we are using a PCH for bridging header, we'll have
+    // problems with source order comparisons of clang source locations not
+    // being deterministic.
+    includeLoc = includeLoc.getLocWithOffset(1);
     DummyIncludeBuffer = srcMgr.createFileID(
         llvm::make_unique<ZeroFilledMemoryBuffer>(
           256*1024, StringRef(moduleImportBufferName)),
@@ -1337,7 +1366,12 @@ bool ClangImporter::importBridgingHeader(StringRef header, ModuleDecl *adapter,
     return true;
   }
 
-  llvm::SmallString<128> importLine{"#import \""};
+  llvm::SmallString<128> importLine;
+  if (Impl.SwiftContext.LangOpts.EnableObjCInterop)
+    importLine = "#import \"";
+  else
+    importLine = "#include \"";
+
   importLine += header;
   importLine += "\"\n";
 
@@ -2550,7 +2584,7 @@ void ClangModuleUnit::getTopLevelDecls(SmallVectorImpl<Decl*> &results) const {
 
       // Note: We can't use getAnyGeneric() here because `aliasedTy`
       // might be typealias.
-      if (auto Ty = dyn_cast<NameAliasType>(aliasedTy.getPointer()))
+      if (auto Ty = dyn_cast<TypeAliasType>(aliasedTy.getPointer()))
         importedDecl = Ty->getDecl();
       else if (auto Ty = dyn_cast<AnyGenericType>(aliasedTy.getPointer()))
         importedDecl = Ty->getDecl();

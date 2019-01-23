@@ -333,7 +333,7 @@ class SILInstruction
   /// Update this instruction's SILDebugScope. This function should
   /// never be called directly. Use SILBuilder, SILBuilderWithScope or
   /// SILClonerWithScope instead.
-  void setDebugScope(SILBuilder &B, const SILDebugScope *DS);
+  void setDebugScope(const SILDebugScope *DS);
 
   /// Total number of created and deleted SILInstructions.
   /// It is used only for collecting the compiler statistics.
@@ -377,11 +377,11 @@ public:
     None,
     /// The instruction may read memory.
     MayRead,
-    /// \brief The instruction may write to memory.
+    /// The instruction may write to memory.
     MayWrite,
     /// The instruction may read or write memory.
     MayReadWrite,
-    /// \brief The instruction may have side effects not captured
+    /// The instruction may have side effects not captured
     ///        solely by its users. Specifically, it can return,
     ///        release memory, or store. Note, alloc is not considered
     ///        to have side effects because its result/users represent
@@ -437,22 +437,22 @@ public:
   /// the basic block that Earlier lives in, right after Earlier.
   void moveAfter(SILInstruction *Earlier);
 
-  /// \brief Drops all uses that belong to this instruction.
+  /// Drops all uses that belong to this instruction.
   void dropAllReferences();
 
-  /// \brief Replace all uses of all results of this instruction with undef.
+  /// Replace all uses of all results of this instruction with undef.
   void replaceAllUsesOfAllResultsWithUndef();
 
-  /// \brief Replace all uses of all results of this instruction
+  /// Replace all uses of all results of this instruction
   /// with the parwise-corresponding results of the given instruction.
   void replaceAllUsesPairwiseWith(SILInstruction *other);
 
-  /// \brief Replace all uses of all results of this instruction with the
+  /// Replace all uses of all results of this instruction with the
   /// parwise-corresponding results of the passed in array.
   void
   replaceAllUsesPairwiseWith(const llvm::SmallVectorImpl<SILValue> &NewValues);
 
-  /// \brief Are there uses of any of the results of this instruction?
+  /// Are there uses of any of the results of this instruction?
   bool hasUsesOfAnyResult() const {
     for (auto result : getResults()) {
       if (!result->use_empty())
@@ -574,7 +574,7 @@ public:
     return hasIdenticalState(RHS);
   }
 
-  /// \brief Returns true if the instruction may have side effects.
+  /// Returns true if the instruction may have side effects.
   ///
   /// Instructions that store into memory or change retain counts as well as
   /// calls and deallocation instructions are considered to have side effects
@@ -2079,6 +2079,12 @@ class PartialApplyInst final
       public llvm::TrailingObjects<PartialApplyInst, Operand> {
   friend SILBuilder;
 
+public:
+  enum OnStackKind {
+    NotOnStack, OnStack
+  };
+
+private:
   PartialApplyInst(SILDebugLocation DebugLoc, SILValue Callee,
                    SILType SubstCalleeType,
                    SubstitutionMap Substitutions,
@@ -2091,7 +2097,8 @@ class PartialApplyInst final
   create(SILDebugLocation DebugLoc, SILValue Callee, ArrayRef<SILValue> Args,
          SubstitutionMap Substitutions, ParameterConvention CalleeConvention,
          SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes,
-         const GenericSpecializationInformation *SpecializationInfo);
+         const GenericSpecializationInformation *SpecializationInfo,
+         OnStackKind onStack);
 
 public:
   /// Return the result function type of this partial apply.
@@ -2100,6 +2107,10 @@ public:
   }
   bool hasCalleeGuaranteedContext() const {
     return getType().castTo<SILFunctionType>()->isCalleeGuaranteed();
+  }
+
+  OnStackKind isOnStack() const {
+    return getFunctionType()->isNoEscape() ? OnStack : NotOnStack;
   }
 };
 
@@ -2848,17 +2859,17 @@ public:
   Identifier getName() const { return Name; }
   void setName(Identifier I) { Name = I; }
   
-  /// \brief Looks up the llvm intrinsic ID and type for the builtin function.
+  /// Looks up the llvm intrinsic ID and type for the builtin function.
   ///
   /// \returns Returns llvm::Intrinsic::not_intrinsic if the function is not an
   /// intrinsic. The particular intrinsic functions which correspond to the
   /// returned value are defined in llvm/Intrinsics.h.
   const IntrinsicInfo &getIntrinsicInfo() const;
   
-  /// \brief Looks up the lazily cached identification for the builtin function.
+  /// Looks up the lazily cached identification for the builtin function.
   const BuiltinInfo &getBuiltinInfo() const;
 
-  /// \brief Looks up the llvm intrinsic ID of this builtin. Returns None if
+  /// Looks up the llvm intrinsic ID of this builtin. Returns None if
   /// this is not an intrinsic.
   llvm::Optional<llvm::Intrinsic::ID> getIntrinsicID() const {
     auto I = getIntrinsicInfo();
@@ -2867,7 +2878,7 @@ public:
     return I.ID;
   }
 
-  /// \brief Looks up the BuiltinKind of this builtin. Returns None if this is
+  /// Looks up the BuiltinKind of this builtin. Returns None if this is
   /// not a builtin.
   llvm::Optional<BuiltinValueKind> getBuiltinKind() const {
     auto I = getBuiltinInfo();
@@ -3003,10 +3014,10 @@ class FloatLiteralInst final
                                   const APFloat &Value, SILModule &M);
 
 public:
-  /// \brief Return the APFloat for the underlying FP literal.
+  /// Return the APFloat for the underlying FP literal.
   APFloat getValue() const;
 
-  /// \brief Return the bitcast representation of the FP literal as an APInt.
+  /// Return the bitcast representation of the FP literal as an APInt.
   APInt getBits() const;
 
   ArrayRef<Operand> getAllOperands() const { return {}; }
@@ -3661,6 +3672,10 @@ public:
     /// DelegatingSelf designates "self" on a struct, enum, or class
     /// in a delegating constructor (one that calls self.init).
     DelegatingSelf,
+
+    /// DelegatingSelfAllocated designates "self" in a delegating class
+    /// initializer where memory has already been allocated.
+    DelegatingSelfAllocated,
   };
 private:
   Kind ThisKind;
@@ -3690,78 +3705,9 @@ public:
   bool isDelegatingSelf() const {
     return ThisKind == DelegatingSelf;
   }
-};
-
-/// MarkUninitializedBehaviorInst - Indicates that a logical property
-/// is uninitialized at this point and needs to be initialized by the end of the
-/// function and before any escape point for this instruction. Assignments
-/// to the property trigger the behavior's `init` or `set` logic based on
-/// the logical initialization state of the property.
-///
-/// This is only valid in Raw SIL.
-class MarkUninitializedBehaviorInst final
-    : public InstructionBase<SILInstructionKind::MarkUninitializedBehaviorInst,
-                             SingleValueInstruction>
-{
-  friend SILBuilder;
-
-  FixedOperandList<4> Operands;
-  SubstitutionMap InitStorageSubstitutions;
-  SubstitutionMap SetterSubstitutions;
-
-  enum {
-    // The initialization function for the storage.
-    InitStorageFunc,
-    // Address of the behavior storage being initialized.
-    Storage,
-    // The setter function for the behavior property.
-    SetterFunc,
-    // The address or reference to the parent `self` being initialized.
-    Self,
-  };
-  
-  MarkUninitializedBehaviorInst(SILDebugLocation DebugLoc,
-                                SILValue InitStorage,
-                                SubstitutionMap InitStorageSubs,
-                                SILValue Storage,
-                                SILValue Setter,
-                                SubstitutionMap SetterSubs,
-                                SILValue Self,
-                                SILType Ty);
-  
-  static MarkUninitializedBehaviorInst *create(SILModule &M,
-                                         SILDebugLocation DebugLoc,
-                                         SILValue InitStorage,
-                                         SubstitutionMap InitStorageSubs,
-                                         SILValue Storage,
-                                         SILValue Setter,
-                                         SubstitutionMap SetterSubs,
-                                         SILValue Self,
-                                         SILType Ty);
-
-public:
-  SILValue getInitStorageFunc() const {
-    return Operands[InitStorageFunc].get();
+  bool isDelegatingSelfAllocated() const {
+    return ThisKind == DelegatingSelfAllocated;
   }
-  SubstitutionMap getInitStorageSubstitutions() const {
-    return InitStorageSubstitutions;
-  }
-  SILValue getStorage() const {
-    return Operands[Storage].get();
-  }
-
-  SILValue getSetterFunc() const {
-    return Operands[SetterFunc].get();
-  }
-  SubstitutionMap getSetterSubstitutions() const {
-    return SetterSubstitutions;
-  }
-  SILValue getSelf() const {
-    return Operands[Self].get();
-  }
-
-  ArrayRef<Operand> getAllOperands() const { return Operands.asArray(); }
-  MutableArrayRef<Operand> getAllOperands() { return Operands.asArray(); }
 };
 
 /// MarkFunctionEscape - Represents the escape point of set of variables due to
@@ -4116,18 +4062,14 @@ class ConvertEscapeToNoEscapeInst final
   friend SILBuilder;
 
   bool lifetimeGuaranteed;
-  bool isEscaped; // Even if we can analyze this
-                        // instruction the user might have
-                        // escaped it.
 
   ConvertEscapeToNoEscapeInst(SILDebugLocation DebugLoc, SILValue Operand,
                               ArrayRef<SILValue> TypeDependentOperands,
-                              SILType Ty, bool isEscapedByUser,
+                              SILType Ty,
                               bool isLifetimeGuaranteed)
       : UnaryInstructionWithTypeDependentOperandsBase(
             DebugLoc, Operand, TypeDependentOperands, Ty),
-        lifetimeGuaranteed(isLifetimeGuaranteed),
-        isEscaped(isEscapedByUser) {
+        lifetimeGuaranteed(isLifetimeGuaranteed) {
     assert(!Operand->getType().castTo<SILFunctionType>()->isNoEscape());
     assert(Ty.castTo<SILFunctionType>()->isNoEscape());
   }
@@ -4135,17 +4077,11 @@ class ConvertEscapeToNoEscapeInst final
   static ConvertEscapeToNoEscapeInst *
   create(SILDebugLocation DebugLoc, SILValue Operand, SILType Ty,
          SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes,
-         bool isEscapedByUser, bool lifetimeGuaranteed);
+         bool lifetimeGuaranteed);
 public:
   bool isLifetimeGuaranteed() const {
     return lifetimeGuaranteed;
   }
-
-  bool isEscapedByUser() const {
-    return isEscaped;
-  }
-
-  void setEscapedByUser(bool isEscaped = true) { this->isEscaped = isEscaped; }
 };
 
 /// ThinFunctionToPointerInst - Convert a thin function pointer to a
@@ -5030,7 +4966,7 @@ class EnumInst : public InstructionBase<SILInstructionKind::EnumInst,
       : InstructionBase(DebugLoc, ResultTy,
                         Operand
                             ? Operand.getOwnershipKind()
-                            : ValueOwnershipKind(ValueOwnershipKind::Trivial)),
+                            : ValueOwnershipKind(ValueOwnershipKind::Any)),
         Element(Element) {
     if (Operand) {
       OptionalOperand.emplace(this, Operand);
@@ -5259,7 +5195,7 @@ public:
     return getDefaultResult();
   }
   
-  /// \brief If the default refers to exactly one case decl, return it.
+  /// If the default refers to exactly one case decl, return it.
   NullablePtr<EnumElementDecl> getUniqueCaseForDefault();
 
   bool hasDefault() const {
@@ -6730,7 +6666,7 @@ public:
     return const_cast<TermInst *>(this)->getSingleSuccessorBlock();
   }
 
-  /// \brief Returns true if \p BB is a successor of this block.
+  /// Returns true if \p BB is a successor of this block.
   bool isSuccessorBlock(SILBasicBlock *BB) const {
     auto Range = getSuccessorBlocks();
     return any_of(Range, [&BB](const SILBasicBlock *SuccBB) -> bool {
@@ -6947,7 +6883,7 @@ class BranchInst final
                             ArrayRef<SILValue> Args, SILFunction &F);
 
 public:
-  /// \brief returns jump target for the branch.
+  /// returns jump target for the branch.
   SILBasicBlock *getDestBB() const { return DestBB; }
 
   /// The arguments for the destination BB.
@@ -7256,7 +7192,7 @@ public:
   // Swap the cases at indices \p i and \p j.
   void swapCase(unsigned i, unsigned j);
 
-  /// \brief Return the block that will be branched to on the specified enum
+  /// Return the block that will be branched to on the specified enum
   /// case.
   SILBasicBlock *getCaseDestination(EnumElementDecl *D) {
     for (unsigned i = 0, e = getNumCases(); i != e; ++i) {
@@ -7268,10 +7204,10 @@ public:
     return getDefaultBB();
   }
 
-  /// \brief If the default refers to exactly one case decl, return it.
+  /// If the default refers to exactly one case decl, return it.
   NullablePtr<EnumElementDecl> getUniqueCaseForDefault();
 
-  /// \brief If the given block only has one enum element decl matched to it,
+  /// If the given block only has one enum element decl matched to it,
   /// return it.
   NullablePtr<EnumElementDecl> getUniqueCaseForDestination(SILBasicBlock *BB);
 

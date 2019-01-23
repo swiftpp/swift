@@ -619,6 +619,10 @@ enum class PlatformAgnosticAvailabilityKind {
   /// The declaration is available in some but not all versions
   /// of Swift, as specified by the VersionTuple members.
   SwiftVersionSpecific,
+  /// The declaration is available in some but not all versions
+  /// of SwiftPM's PackageDescription library, as specified by
+  /// the VersionTuple members.
+  PackageDescriptionVersionSpecific,
   /// The declaration is unavailable for other reasons.
   Unavailable,
 };
@@ -689,6 +693,9 @@ public:
   /// Whether this is a language-version-specific entity.
   bool isLanguageVersionSpecific() const;
 
+  /// Whether this is a PackageDescription version specific entity.
+  bool isPackageDescriptionVersionSpecific() const;
+
   /// Whether this is an unconditionally unavailable entity.
   bool isUnconditionallyUnavailable() const;
 
@@ -724,6 +731,12 @@ public:
 
   /// Returns true if this attribute is active given the current platform.
   bool isActivePlatform(const ASTContext &ctx) const;
+
+  /// Returns the active version from the AST context corresponding to
+  /// the available kind. For example, this will return the effective language
+  /// version for swift version-specific availability kind, PackageDescription
+  /// version for PackageDescription version-specific availability.
+  llvm::VersionTuple getActiveVersion(const ASTContext &ctx) const;
 
   /// Compare this attribute's version information against the platform or
   /// language version (assuming the this attribute pertains to the active
@@ -1510,7 +1523,7 @@ public:
   }
 };
 
-/// \brief Attributes that may be applied to declarations.
+/// Attributes that may be applied to declarations.
 class DeclAttributes {
   /// Linked list of declaration attributes.
   DeclAttribute *DeclAttrs;

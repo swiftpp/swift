@@ -516,8 +516,7 @@ SILValue AvailableValueAggregator::handlePrimitiveValue(SILType LoadTy,
   if (!Val) {
     auto *Load =
         B.createLoad(Loc, Address, LoadOwnershipQualifier::Unqualified);
-    Uses.push_back(PMOMemoryUse(Load, PMOUseKind::Load, FirstElt,
-                                getNumSubElements(Load->getType(), M)));
+    Uses.emplace_back(Load, PMOUseKind::Load);
     return Load;
   }
 
@@ -537,7 +536,7 @@ SILValue AvailableValueAggregator::handlePrimitiveValue(SILType LoadTy,
 
   // If we have an available value, then we want to extract the subelement from
   // the borrowed aggregate before each insertion point.
-  SILSSAUpdater Updater;
+  SILSSAUpdater Updater(B.getModule());
   Updater.Initialize(LoadTy);
   for (auto *I : Val.getInsertionPoints()) {
     // Use the scope and location of the store at the insertion point.
@@ -912,7 +911,7 @@ void AvailableValueDataflowContext::explodeCopyAddr(CopyAddrInst *CAI) {
   assert((LoadUse.isValid() || StoreUse.isValid()) &&
          "we should have a load or a store, possibly both");
   assert(StoreUse.isInvalid() || StoreUse.Kind == Assign ||
-         StoreUse.Kind == PartialStore || StoreUse.Kind == Initialization);
+         StoreUse.Kind == Initialization || StoreUse.Kind == InitOrAssign);
 
   // Now that we've emitted a bunch of instructions, including a load and store
   // but also including other stuff, update the internal state of
@@ -931,6 +930,12 @@ void AvailableValueDataflowContext::explodeCopyAddr(CopyAddrInst *CAI) {
       // something else), track it as an access.
       if (StoreUse.isValid()) {
         StoreUse.Inst = NewInst;
+        // If our store use by the copy_addr is an assign, then we know that
+        // before we store the new value, we loaded the old value implying that
+        // our store is technically initializing memory when it occurs. So
+        // change the kind to Initialization.
+        if (StoreUse.Kind == Assign)
+          StoreUse.Kind = Initialization;
         NonLoadUses[NewInst] = Uses.size();
         Uses.push_back(StoreUse);
       }
@@ -949,11 +954,6 @@ void AvailableValueDataflowContext::explodeCopyAddr(CopyAddrInst *CAI) {
       }
       continue;
 
-#define ALWAYS_OR_SOMETIMES_LOADABLE_CHECKED_REF_STORAGE(Name, ...) \
-    case SILInstructionKind::Name##RetainInst: \
-    case SILInstructionKind::Name##ReleaseInst: \
-    case SILInstructionKind::StrongRetain##Name##Inst:
-#include "swift/AST/ReferenceStorage.def"
     case SILInstructionKind::RetainValueInst:
     case SILInstructionKind::StrongRetainInst:
     case SILInstructionKind::StrongReleaseInst:
@@ -984,6 +984,18 @@ bool AvailableValueDataflowContext::hasEscapedAt(SILInstruction *I) {
 //                          Allocation Optimization
 //===----------------------------------------------------------------------===//
 
+static SILType getMemoryType(AllocationInst *memory) {
+  // Compute the type of the memory object.
+  if (auto *abi = dyn_cast<AllocBoxInst>(memory)) {
+    assert(abi->getBoxType()->getLayout()->getFields().size() == 1 &&
+           "optimizing multi-field boxes not implemented");
+    return abi->getBoxType()->getFieldType(abi->getModule(), 0);
+  }
+
+  assert(isa<AllocStackInst>(memory));
+  return cast<AllocStackInst>(memory)->getElementType();
+}
+
 namespace {
 
 /// This performs load promotion and deletes synthesized allocations if all
@@ -1009,44 +1021,27 @@ class AllocOptimize {
   AvailableValueDataflowContext DataflowContext;
 
 public:
-  AllocOptimize(AllocationInst *TheMemory, SmallVectorImpl<PMOMemoryUse> &Uses,
-                SmallVectorImpl<SILInstruction *> &Releases);
+  AllocOptimize(AllocationInst *memory, SmallVectorImpl<PMOMemoryUse> &uses,
+                SmallVectorImpl<SILInstruction *> &releases)
+      : Module(memory->getModule()), TheMemory(memory),
+        MemoryType(getMemoryType(memory)),
+        NumMemorySubElements(getNumSubElements(MemoryType, Module)), Uses(uses),
+        Releases(releases),
+        DataflowContext(TheMemory, NumMemorySubElements, uses) {}
 
-  bool doIt();
+  bool optimizeMemoryAccesses();
+  bool tryToRemoveDeadAllocation();
 
 private:
   bool promoteLoad(SILInstruction *Inst);
   void promoteDestroyAddr(DestroyAddrInst *DAI,
                           MutableArrayRef<AvailableValue> Values);
-  bool
-  canPromoteDestroyAddr(DestroyAddrInst *DAI,
-                        llvm::SmallVectorImpl<AvailableValue> &AvailableValues);
-
-  bool tryToRemoveDeadAllocation();
+  bool canPromoteDestroyAddr(DestroyAddrInst *DAI,
+                             SmallVectorImpl<AvailableValue> &AvailableValues);
 };
 
 } // end anonymous namespace
 
-static SILType getMemoryType(AllocationInst *TheMemory) {
-  // Compute the type of the memory object.
-  if (auto *ABI = dyn_cast<AllocBoxInst>(TheMemory)) {
-    assert(ABI->getBoxType()->getLayout()->getFields().size() == 1 &&
-           "optimizing multi-field boxes not implemented");
-    return ABI->getBoxType()->getFieldType(ABI->getModule(), 0);
-  } else {
-    assert(isa<AllocStackInst>(TheMemory));
-    return cast<AllocStackInst>(TheMemory)->getElementType();
-  }
-}
-
-AllocOptimize::AllocOptimize(AllocationInst *InputMemory,
-                             SmallVectorImpl<PMOMemoryUse> &InputUses,
-                             SmallVectorImpl<SILInstruction *> &InputReleases)
-    : Module(InputMemory->getModule()), TheMemory(InputMemory),
-      MemoryType(getMemoryType(TheMemory)),
-      NumMemorySubElements(getNumSubElements(MemoryType, Module)),
-      Uses(InputUses), Releases(InputReleases),
-      DataflowContext(TheMemory, NumMemorySubElements, Uses) {}
 
 /// If we are able to optimize \p Inst, return the source address that
 /// instruction is loading from. If we can not optimize \p Inst, then just
@@ -1150,8 +1145,7 @@ bool AllocOptimize::promoteLoad(SILInstruction *Inst) {
 
 /// Return true if we can promote the given destroy.
 bool AllocOptimize::canPromoteDestroyAddr(
-    DestroyAddrInst *DAI,
-    llvm::SmallVectorImpl<AvailableValue> &AvailableValues) {
+    DestroyAddrInst *DAI, SmallVectorImpl<AvailableValue> &AvailableValues) {
   SILValue Address = DAI->getOperand();
 
   // We cannot promote destroys of address-only types, because we can't expose
@@ -1225,8 +1219,49 @@ void AllocOptimize::promoteDestroyAddr(
   DAI->eraseFromParent();
 }
 
-/// tryToRemoveDeadAllocation - If the allocation is an autogenerated allocation
-/// that is only stored to (after load promotion) then remove it completely.
+namespace {
+
+struct DestroyAddrPromotionState {
+  ArrayRef<SILInstruction *> destroys;
+  SmallVector<unsigned, 8> destroyAddrIndices;
+  SmallVector<AvailableValue, 32> availableValueList;
+  SmallVector<unsigned, 8> availableValueStartOffsets;
+
+  DestroyAddrPromotionState(ArrayRef<SILInstruction *> destroys)
+      : destroys(destroys) {}
+
+  unsigned size() const {
+    return destroyAddrIndices.size();
+  }
+
+  void initializeForDestroyAddr(unsigned destroyAddrIndex) {
+    availableValueStartOffsets.push_back(availableValueList.size());
+    destroyAddrIndices.push_back(destroyAddrIndex);
+  }
+
+  std::pair<DestroyAddrInst *, MutableArrayRef<AvailableValue>>
+  getData(unsigned index) {
+    unsigned destroyAddrIndex = destroyAddrIndices[index];
+    unsigned startOffset = availableValueStartOffsets[index];
+    unsigned count;
+
+    if ((availableValueStartOffsets.size() - 1) != index) {
+      count = availableValueStartOffsets[index + 1] - startOffset;
+    } else {
+      count = availableValueList.size() - startOffset;
+    }
+
+    MutableArrayRef<AvailableValue> values(&availableValueList[startOffset],
+                                           count);
+    auto *dai = cast<DestroyAddrInst>(destroys[destroyAddrIndex]);
+    return {dai, values};
+  }
+};
+
+} // end anonymous namespace
+
+/// If the allocation is an autogenerated allocation that is only stored to
+/// (after load promotion) then remove it completely.
 bool AllocOptimize::tryToRemoveDeadAllocation() {
   assert((isa<AllocBoxInst>(TheMemory) || isa<AllocStackInst>(TheMemory)) &&
          "Unhandled allocation case");
@@ -1237,32 +1272,32 @@ bool AllocOptimize::tryToRemoveDeadAllocation() {
   // 1. They are in a transparent function.
   // 2. They are in a normal function, but didn't come from a VarDecl, or came
   //    from one that was autogenerated or inlined from a transparent function.
-  SILLocation Loc = TheMemory->getLoc();
+  SILLocation loc = TheMemory->getLoc();
   if (!TheMemory->getFunction()->isTransparent() &&
-      Loc.getAsASTNode<VarDecl>() && !Loc.isAutoGenerated() &&
-      !Loc.is<MandatoryInlinedLocation>())
+      loc.getAsASTNode<VarDecl>() && !loc.isAutoGenerated() &&
+      !loc.is<MandatoryInlinedLocation>())
     return false;
 
   // Check the uses list to see if there are any non-store uses left over after
   // load promotion and other things PMO does.
-  for (auto &U : Uses) {
+  for (auto &u : Uses) {
     // Ignore removed instructions.
-    if (U.Inst == nullptr) continue;
+    if (u.Inst == nullptr)
+      continue;
 
-    switch (U.Kind) {
-    case PMOUseKind::SelfInit:
-    case PMOUseKind::SuperInit:
-      llvm_unreachable("Can't happen on allocations");
+    switch (u.Kind) {
     case PMOUseKind::Assign:
-    case PMOUseKind::PartialStore:
+      // Until we can promote the value being destroyed by the assign, we can
+      // not remove deallocations with such assigns.
+      return false;
     case PMOUseKind::InitOrAssign:
       break;    // These don't prevent removal.
     case PMOUseKind::Initialization:
-      if (!isa<ApplyInst>(U.Inst) &&
+      if (!isa<ApplyInst>(u.Inst) &&
           // A copy_addr that is not a take affects the retain count
           // of the source.
-          (!isa<CopyAddrInst>(U.Inst) ||
-           cast<CopyAddrInst>(U.Inst)->isTakeOfSrc()))
+          (!isa<CopyAddrInst>(u.Inst) ||
+           cast<CopyAddrInst>(u.Inst)->isTakeOfSrc()))
         break;
       // FALL THROUGH.
      LLVM_FALLTHROUGH;
@@ -1271,63 +1306,65 @@ bool AllocOptimize::tryToRemoveDeadAllocation() {
     case PMOUseKind::InOutUse:
     case PMOUseKind::Escape:
       LLVM_DEBUG(llvm::dbgs() << "*** Failed to remove autogenerated alloc: "
-                 "kept alive by: " << *U.Inst);
+                                 "kept alive by: "
+                              << *u.Inst);
       return false;   // These do prevent removal.
     }
   }
 
-  // If the memory object has non-trivial type, then removing the deallocation
-  // will drop any releases.  Check that there is nothing preventing removal.
-  llvm::SmallVector<unsigned, 8> DestroyAddrIndices;
-  llvm::SmallVector<AvailableValue, 32> AvailableValueList;
-  llvm::SmallVector<unsigned, 8> AvailableValueStartOffsets;
+  // If our memory is trivially typed, we can just remove it without needing to
+  // consider if the stored value needs to be destroyed. So at this point,
+  // delete the memory!
+  if (MemoryType.isTrivial(Module)) {
+    LLVM_DEBUG(llvm::dbgs() << "*** Removing autogenerated trivial allocation: "
+                            << *TheMemory);
 
-  if (!MemoryType.isTrivial(Module)) {
-    for (auto P : llvm::enumerate(Releases)) {
-      auto *R = P.value();
-      if (R == nullptr || isa<DeallocStackInst>(R) || isa<DeallocBoxInst>(R))
-        continue;
+    // If it is safe to remove, do it.  Recursively remove all instructions
+    // hanging off the allocation instruction, then return success.  Let the
+    // caller remove the allocation itself to avoid iterator invalidation.
+    eraseUsesOfInstruction(TheMemory);
 
-      // We stash all of the destroy_addr that we see.
-      if (auto *DAI = dyn_cast<DestroyAddrInst>(R)) {
-        AvailableValueStartOffsets.push_back(AvailableValueList.size());
-        // Make sure we can actually promote this destroy addr. If we can not,
-        // then we must bail. In order to not gather available values twice, we
-        // gather the available values here that we will use to promote the
-        // values.
-        if (!canPromoteDestroyAddr(DAI, AvailableValueList))
-          return false;
-        DestroyAddrIndices.push_back(P.index());
-        continue;
-      }
+    return true;
+  }
 
-      LLVM_DEBUG(llvm::dbgs() << "*** Failed to remove autogenerated alloc: "
-                 "kept alive by release: " << *R);
-      return false;
+  // Otherwise removing the deallocation will drop any releases.  Check that
+  // there is nothing preventing removal.
+  DestroyAddrPromotionState state(Releases);
+
+  for (auto p : llvm::enumerate(Releases)) {
+    auto *r = p.value();
+    if (r == nullptr)
+      continue;
+
+    // We stash all of the destroy_addr that we see.
+    if (auto *dai = dyn_cast<DestroyAddrInst>(r)) {
+      state.initializeForDestroyAddr(p.index() /*destroyAddrIndex*/);
+      // Make sure we can actually promote this destroy addr. If we can not,
+      // then we must bail. In order to not gather available values twice, we
+      // gather the available values here that we will use to promote the
+      // values.
+      if (!canPromoteDestroyAddr(dai, state.availableValueList))
+        return false;
+      continue;
     }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "*** Failed to remove autogenerated non-trivial alloc: "
+                  "kept alive by release: "
+               << *r);
+    return false;
   }
 
   // If we reached this point, we can promote all of our destroy_addr.
-  for (auto P : llvm::enumerate(DestroyAddrIndices)) {
-    unsigned DestroyAddrIndex = P.value();
-    unsigned AvailableValueIndex = P.index();
-    unsigned StartOffset = AvailableValueStartOffsets[AvailableValueIndex];
-    unsigned Count;
-
-    if ((AvailableValueStartOffsets.size() - 1) != AvailableValueIndex) {
-      Count = AvailableValueStartOffsets[AvailableValueIndex + 1] - StartOffset;
-    } else {
-      Count = AvailableValueList.size() - StartOffset;
-    }
-
-    MutableArrayRef<AvailableValue> Values(&AvailableValueList[StartOffset],
-                                           Count);
-    auto *DAI = cast<DestroyAddrInst>(Releases[DestroyAddrIndex]);
-    promoteDestroyAddr(DAI, Values);
-    Releases[DestroyAddrIndex] = nullptr;
+  for (unsigned i : range(state.size())) {
+    DestroyAddrInst *dai;
+    MutableArrayRef<AvailableValue> values;
+    std::tie(dai, values) = state.getData(i);
+    promoteDestroyAddr(dai, values);
+    // We do not need to unset releases, since we are going to exit here.
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "*** Removing autogenerated alloc_stack: "
+  LLVM_DEBUG(llvm::dbgs() << "*** Removing autogenerated non-trivial alloc: "
                           << *TheMemory);
 
   // If it is safe to remove, do it.  Recursively remove all instructions
@@ -1338,79 +1375,135 @@ bool AllocOptimize::tryToRemoveDeadAllocation() {
   return true;
 }
 
-/// doIt - returns true on error.
-bool AllocOptimize::doIt() {
-  bool Changed = false;
-
-  // Don't try to optimize incomplete aggregates.
-  if (MemoryType.aggregateHasUnreferenceableStorage())
-    return false;
+bool AllocOptimize::optimizeMemoryAccesses() {
+  bool changed = false;
 
   // If we've successfully checked all of the definitive initialization
   // requirements, try to promote loads.  This can explode copy_addrs, so the
   // use list may change size.
   for (unsigned i = 0; i != Uses.size(); ++i) {
-    auto &Use = Uses[i];
+    auto &use = Uses[i];
     // Ignore entries for instructions that got expanded along the way.
-    if (Use.Inst && Use.Kind == PMOUseKind::Load) {
-      if (promoteLoad(Use.Inst)) {
+    if (use.Inst && use.Kind == PMOUseKind::Load) {
+      if (promoteLoad(use.Inst)) {
         Uses[i].Inst = nullptr;  // remove entry if load got deleted.
-        Changed = true;
+        changed = true;
       }
     }
   }
-  
-  // If this is an allocation, try to remove it completely.
-  Changed |= tryToRemoveDeadAllocation();
 
-  return Changed;
+  return changed;
 }
 
-static bool optimizeMemoryAllocations(SILFunction &Fn) {
-  bool Changed = false;
-  for (auto &BB : Fn) {
-    auto I = BB.begin(), E = BB.end();
-    while (I != E) {
-      SILInstruction *Inst = &*I;
-      if (!isa<AllocBoxInst>(Inst) && !isa<AllocStackInst>(Inst)) {
-        ++I;
+//===----------------------------------------------------------------------===//
+//                           Top Level Entrypoints
+//===----------------------------------------------------------------------===//
+
+static AllocationInst *getOptimizableAllocation(SILInstruction *i) {
+  if (!isa<AllocBoxInst>(i) && !isa<AllocStackInst>(i)) {
+    return nullptr;
+  }
+
+  auto *alloc = cast<AllocationInst>(i);
+
+  // If our aggregate has unreferencable storage, we can't optimize. Return
+  // nullptr.
+  if (getMemoryType(alloc).aggregateHasUnreferenceableStorage())
+    return nullptr;
+
+  // Otherwise we are good to go. Lets try to optimize this memory!
+  return alloc;
+}
+
+static bool optimizeMemoryAccesses(SILFunction &fn) {
+  bool changed = false;
+  for (auto &bb : fn) {
+    auto i = bb.begin(), e = bb.end();
+    while (i != e) {
+      // First see if i is an allocation that we can optimize. If not, skip it.
+      AllocationInst *alloc = getOptimizableAllocation(&*i);
+      if (!alloc) {
+        ++i;
         continue;
       }
-      auto Alloc = cast<AllocationInst>(Inst);
 
-      LLVM_DEBUG(llvm::dbgs() << "*** PMO Optimize looking at: " << *Alloc
-                              << "\n");
-      PMOMemoryObjectInfo MemInfo(Alloc);
+      LLVM_DEBUG(llvm::dbgs() << "*** PMO Optimize Memory Accesses looking at: "
+                              << *alloc << "\n");
+      PMOMemoryObjectInfo memInfo(alloc);
 
       // Set up the datastructure used to collect the uses of the allocation.
-      SmallVector<PMOMemoryUse, 16> Uses;
-      SmallVector<SILInstruction*, 4> Releases;
+      SmallVector<PMOMemoryUse, 16> uses;
+      SmallVector<SILInstruction *, 4> destroys;
 
       // Walk the use list of the pointer, collecting them. If we are not able
       // to optimize, skip this value. *NOTE* We may still scalarize values
       // inside the value.
-      if (!collectPMOElementUsesFrom(MemInfo, Uses, Releases)) {
-        ++I;
+      if (!collectPMOElementUsesFrom(memInfo, uses, destroys)) {
+        ++i;
         continue;
       }
 
-      Changed |= AllocOptimize(Alloc, Uses, Releases).doIt();
-      
-      // Carefully move iterator to avoid invalidation problems.
-      ++I;
-      if (Alloc->use_empty()) {
-        Alloc->eraseFromParent();
+      AllocOptimize allocOptimize(alloc, uses, destroys);
+      changed |= allocOptimize.optimizeMemoryAccesses();
+
+      // Move onto the next instruction. We know this is safe since we do not
+      // eliminate allocations here.
+      ++i;
+    }
+  }
+
+  return changed;
+}
+
+static bool eliminateDeadAllocations(SILFunction &fn) {
+  bool changed = false;
+  for (auto &bb : fn) {
+    auto i = bb.begin(), e = bb.end();
+    while (i != e) {
+      // First see if i is an allocation that we can optimize. If not, skip it.
+      AllocationInst *alloc = getOptimizableAllocation(&*i);
+      if (!alloc) {
+        ++i;
+        continue;
+      }
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "*** PMO Dead Allocation Elimination looking at: " << *alloc
+                 << "\n");
+      PMOMemoryObjectInfo memInfo(alloc);
+
+      // Set up the datastructure used to collect the uses of the allocation.
+      SmallVector<PMOMemoryUse, 16> uses;
+      SmallVector<SILInstruction *, 4> destroys;
+
+      // Walk the use list of the pointer, collecting them. If we are not able
+      // to optimize, skip this value. *NOTE* We may still scalarize values
+      // inside the value.
+      if (!collectPMOElementUsesFrom(memInfo, uses, destroys)) {
+        ++i;
+        continue;
+      }
+
+      AllocOptimize allocOptimize(alloc, uses, destroys);
+      changed |= allocOptimize.tryToRemoveDeadAllocation();
+
+      // Move onto the next instruction. We know this is safe since we do not
+      // eliminate allocations here.
+      ++i;
+      if (alloc->use_empty()) {
+        alloc->eraseFromParent();
         ++NumAllocRemoved;
-        Changed = true;
+        changed = true;
       }
     }
   }
-  return Changed;
+
+  return changed;
 }
 
 namespace {
 
-class PredictableMemoryOptimizations : public SILFunctionTransform {
+class PredictableMemoryAccessOptimizations : public SILFunctionTransform {
   /// The entry point to the transformation.
   ///
   /// FIXME: This pass should not need to rerun on deserialized
@@ -1419,14 +1512,25 @@ class PredictableMemoryOptimizations : public SILFunctionTransform {
   /// either indicates that this pass missing some opportunities the first time,
   /// or has a pass order dependency on other early passes.
   void run() override {
-    if (optimizeMemoryAllocations(*getFunction()))
+    // TODO: Can we invalidate here just instructions?
+    if (optimizeMemoryAccesses(*getFunction()))
+      invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
+  }
+};
+
+class PredictableDeadAllocationElimination : public SILFunctionTransform {
+  void run() override {
+    if (eliminateDeadAllocations(*getFunction()))
       invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
   }
 };
 
 } // end anonymous namespace
 
+SILTransform *swift::createPredictableMemoryAccessOptimizations() {
+  return new PredictableMemoryAccessOptimizations();
+}
 
-SILTransform *swift::createPredictableMemoryOptimizations() {
-  return new PredictableMemoryOptimizations();
+SILTransform *swift::createPredictableDeadAllocationElimination() {
+  return new PredictableDeadAllocationElimination();
 }

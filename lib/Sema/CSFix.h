@@ -21,6 +21,7 @@
 #include "swift/AST/Expr.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Type.h"
+#include "swift/AST/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/TrailingObjects.h"
@@ -89,6 +90,20 @@ enum class FixKind : uint8_t {
   /// @autoclosure conversions are unsupported starting from
   /// Swift version 5.
   AutoClosureForwarding,
+
+  /// Remove `!` or `?` because base is not an optional type.
+  RemoveUnwrap,
+
+  /// Add explicit `()` at the end of function or member to call it.
+  InsertCall,
+
+  /// Instead of spelling out `subscript` directly, use subscript operator.
+  UseSubscriptOperator,
+
+  /// Requested name is not associated with a give base type,
+  /// fix this issue by pretending that member exists and matches
+  /// given arguments/result types exactly.
+  DefineMemberBasedOnUse,
 };
 
 class ConstraintFix {
@@ -96,13 +111,20 @@ class ConstraintFix {
   FixKind Kind;
   ConstraintLocator *Locator;
 
+  /// Determines whether this fix is simplify a warning which doesn't
+  /// require immediate source changes.
+  bool IsWarning;
+
 public:
-  ConstraintFix(ConstraintSystem &cs, FixKind kind, ConstraintLocator *locator)
-      : CS(cs), Kind(kind), Locator(locator) {}
+  ConstraintFix(ConstraintSystem &cs, FixKind kind, ConstraintLocator *locator,
+                bool warning = false)
+      : CS(cs), Kind(kind), Locator(locator), IsWarning(warning) {}
 
   virtual ~ConstraintFix();
 
   FixKind getKind() const { return Kind; }
+
+  bool isWarning() const { return IsWarning; }
 
   virtual std::string getName() const = 0;
 
@@ -406,6 +428,77 @@ public:
 
   static AutoClosureForwarding *create(ConstraintSystem &cs,
                                        ConstraintLocator *locator);
+};
+
+class RemoveUnwrap final : public ConstraintFix {
+  Type BaseType;
+
+public:
+  RemoveUnwrap(ConstraintSystem &cs, Type baseType, ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::RemoveUnwrap, locator), BaseType(baseType) {}
+
+  std::string getName() const override {
+    return "remove unwrap operator `!` or `?`";
+  }
+
+  bool diagnose(Expr *root, bool asNote = false) const override;
+
+  static RemoveUnwrap *create(ConstraintSystem &cs, Type baseType,
+                              ConstraintLocator *locator);
+};
+
+class InsertExplicitCall final : public ConstraintFix {
+public:
+  InsertExplicitCall(ConstraintSystem &cs, ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::InsertCall, locator) {}
+
+  std::string getName() const override {
+    return "insert explicit `()` to make a call";
+  }
+
+  bool diagnose(Expr *root, bool asNote = false) const override;
+
+  static InsertExplicitCall *create(ConstraintSystem &cs,
+                                    ConstraintLocator *locator);
+};
+
+class UseSubscriptOperator final : public ConstraintFix {
+public:
+  UseSubscriptOperator(ConstraintSystem &cs, ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::UseSubscriptOperator, locator) {}
+
+  std::string getName() const override {
+    return "replace '.subscript(...)' with subscript operator";
+  }
+
+  bool diagnose(Expr *root, bool asNote = false) const override;
+
+  static UseSubscriptOperator *create(ConstraintSystem &cs,
+                                      ConstraintLocator *locator);
+};
+
+class DefineMemberBasedOnUse final : public ConstraintFix {
+  Type BaseType;
+  DeclName Name;
+
+public:
+  DefineMemberBasedOnUse(ConstraintSystem &cs, Type baseType, DeclName member,
+                         ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::DefineMemberBasedOnUse, locator),
+        BaseType(baseType), Name(member) {}
+
+  std::string getName() const override {
+    llvm::SmallVector<char, 16> scratch;
+    auto memberName = Name.getString(scratch);
+    return "define missing member named '" + memberName.str() +
+           "' based on its use";
+  }
+
+  bool diagnose(Expr *root, bool asNote = false) const override;
+
+  static DefineMemberBasedOnUse *create(ConstraintSystem &cs, Type baseType,
+                                        DeclName member,
+                                        ConstraintLocator *locator);
 };
 
 } // end namespace constraints

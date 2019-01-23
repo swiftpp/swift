@@ -426,7 +426,7 @@ AbstractFunctionDecl *SILDeclRef::getAbstractFunctionDecl() const {
   return dyn_cast<AbstractFunctionDecl>(getDecl());
 }
 
-/// \brief True if the function should be treated as transparent.
+/// True if the function should be treated as transparent.
 bool SILDeclRef::isTransparent() const {
   if (isEnumElement())
     return true;
@@ -448,8 +448,13 @@ bool SILDeclRef::isTransparent() const {
   return false;
 }
 
-/// \brief True if the function should have its body serialized.
+/// True if the function should have its body serialized.
 IsSerialized_t SILDeclRef::isSerialized() const {
+  // Native-to-foreign thunks are only referenced from the Objective-C
+  // method table.
+  if (isForeign)
+    return IsNotSerialized;
+
   DeclContext *dc;
   if (auto closure = getAbstractClosureExpr())
     dc = closure->getLocalContext();
@@ -534,7 +539,7 @@ IsSerialized_t SILDeclRef::isSerialized() const {
   return IsNotSerialized;
 }
 
-/// \brief True if the function has an @inline(never) attribute.
+/// True if the function has an @inline(never) attribute.
 bool SILDeclRef::isNoinline() const {
   if (!hasDecl())
     return false;
@@ -558,7 +563,7 @@ bool SILDeclRef::isNoinline() const {
   return false;
 }
 
-/// \brief True if the function has the @inline(__always) attribute.
+/// True if the function has the @inline(__always) attribute.
 bool SILDeclRef::isAlwaysInline() const {
   if (!hasDecl())
     return false;
@@ -956,6 +961,9 @@ SubclassScope SILDeclRef::getSubclassScope() const {
   assert(FD->getEffectiveAccess() <= classType->getEffectiveAccess() &&
          "class must be as visible as its members");
 
+  // FIXME: This is too narrow. Any class with resilient metadata should
+  // probably have this, at least for method overrides that don't add new
+  // vtable entries.
   if (classType->isResilient())
     return SubclassScope::Resilient;
 

@@ -6,7 +6,7 @@ silopt_register_sources(
   DefiniteInitialization.cpp
   # SWIFT_ENABLE_TENSORFLOW
   Differentiation.cpp
-  DIMemoryUseCollectorOwnership.cpp
+  DIMemoryUseCollector.cpp
   DataflowDiagnostics.cpp
   DiagnoseInfiniteRecursion.cpp
   DiagnoseStaticExclusivity.cpp

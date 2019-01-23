@@ -302,9 +302,6 @@ ERROR(getset_init,none,
       "variable with getter/setter cannot have an initial value", ())
 ERROR(getset_cannot_be_implied,none,
       "variable with implied type cannot have implied getter/setter", ())
-ERROR(behavior_multiple_vars,none,
-      "applying property behavior with parameter to multiple variables is "
-      "not supported", ())
 
 // Import
 ERROR(decl_expected_module_name,none,
@@ -865,10 +862,6 @@ ERROR(parameter_let_var_as_attr,none,
       (StringRef))
 
 
-ERROR(expected_behavior_name,none,
-      "expected behavior name after '[' in property declaration", ())
-
-
 WARNING(parameter_extraneous_double_up,none,
         "extraneous duplicate parameter name; %0 already has an argument "
         "label", (Identifier))
@@ -1330,6 +1323,9 @@ ERROR(alignment_must_be_positive_integer,none,
 ERROR(swift_native_objc_runtime_base_must_be_identifier,none,
       "@_swift_native_objc_runtime_base class name must be an identifier", ())
 
+ERROR(objc_runtime_name_must_be_identifier,none,
+      "@_objcRuntimeName name must be an identifier", ())
+
 ERROR(attr_only_at_non_local_scope, none,
       "attribute '%0' can only be used in a non-local scope", (StringRef))
 
@@ -1344,6 +1340,8 @@ WARNING(attr_renamed_warning, none,
         "'@%0' has been renamed to '@%1'", (StringRef, StringRef))
 ERROR(attr_name_close_match, none,
       "no attribute named '@%0'; did you mean '@%1'?", (StringRef, StringRef))
+ERROR(attr_unsupported_on_target, none,
+      "attribute '%0' is unsupported on target '%1'", (StringRef, StringRef))
 
 // availability
 ERROR(attr_availability_platform,none,
@@ -1352,6 +1350,8 @@ ERROR(attr_availability_unavailable_deprecated,none,
       "'%0' attribute cannot be both unconditionally 'unavailable' and "
       "'deprecated'", (StringRef))
 
+WARNING(attr_availability_invalid_duplicate,none,
+        "'%0' argument has already been specified", (StringRef))
 WARNING(attr_availability_unknown_platform,none,
       "unknown platform '%0' for attribute '%1'", (StringRef, StringRef))
 ERROR(attr_availability_invalid_renamed,none,
@@ -1368,15 +1368,15 @@ ERROR(attr_availability_expected_equal,none,
 ERROR(attr_availability_expected_version,none,
       "expected version number in '%0' attribute", (StringRef))
 
-WARNING(attr_availability_swift_expected_option,none,
+WARNING(attr_availability_platform_agnostic_expected_option,none,
       "expected 'introduced', 'deprecated', or 'obsoleted' in '%0' attribute "
-      "for platform 'swift'", (StringRef))
-WARNING(attr_availability_swift_expected_deprecated_version,none,
+      "for platform '%1'", (StringRef, StringRef))
+WARNING(attr_availability_platform_agnostic_expected_deprecated_version,none,
       "expected version number with 'deprecated' in '%0' attribute for "
-      "platform 'swift'", (StringRef))
-WARNING(attr_availability_swift_infeasible_option,none,
-      "'%0' cannot be used in '%1' attribute for platform 'swift'",
-      (StringRef, StringRef))
+      "platform '%1'", (StringRef, StringRef))
+WARNING(attr_availability_platform_agnostic_infeasible_option,none,
+      "'%0' cannot be used in '%1' attribute for platform '%2'",
+      (StringRef, StringRef, StringRef))
 
 WARNING(attr_availability_nonspecific_platform_unexpected_version,none,
       "unexpected version number in '%0' attribute for non-specific platform "
@@ -1660,11 +1660,14 @@ ERROR(avail_query_version_comparison_not_needed,
 ERROR(availability_query_wildcard_required, none,
       "must handle potential future platforms with '*'", ())
 
-ERROR(availability_swift_must_occur_alone, none,
-      "'swift' version-availability must be specified alone", ())
+ERROR(availability_must_occur_alone, none,
+      "'%0' version-availability must be specified alone", (StringRef))
 
 ERROR(pound_available_swift_not_allowed, none,
       "Swift language version checks not allowed in #available(...)", ())
+
+ERROR(pound_available_package_description_not_allowed, none,
+      "PackageDescription version checks not allowed in #available(...)", ())
 
 ERROR(availability_query_repeated_platform, none,
       "version for '%0' already specified", (StringRef))

@@ -315,7 +315,7 @@ deriveParameterized_allParameters(DerivedConformance &derived) {
   derived.addMembersToConformanceContext(
       {getterDecl, setterDecl, allParamsDecl, pbDecl});
 
-  addExpectedOpaqueAccessorsToStorage(TC, allParamsDecl);
+  addExpectedOpaqueAccessorsToStorage(TC, C);
   triggerAccessorSynthesis(TC, allParamsDecl);
 
   return allParamsDecl;

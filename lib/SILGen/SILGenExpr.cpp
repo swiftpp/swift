@@ -70,7 +70,7 @@ ManagedValue SILGenFunction::emitManagedRetain(SILLocation loc,
   if (lowering.isTrivial())
     return ManagedValue::forUnmanaged(v);
   if (v->getType().isObject() &&
-      v.getOwnershipKind() == ValueOwnershipKind::Trivial)
+      v.getOwnershipKind() == ValueOwnershipKind::Any)
     return ManagedValue::forUnmanaged(v);
   assert((!lowering.isAddressOnly() || !silConv.useLoweredAddresses()) &&
          "cannot retain an unloadable type");
@@ -90,7 +90,7 @@ ManagedValue SILGenFunction::emitManagedLoadCopy(SILLocation loc, SILValue v,
   v = lowering.emitLoadOfCopy(B, loc, v, IsNotTake);
   if (lowering.isTrivial())
     return ManagedValue::forUnmanaged(v);
-  if (v.getOwnershipKind() == ValueOwnershipKind::Trivial)
+  if (v.getOwnershipKind() == ValueOwnershipKind::Any)
     return ManagedValue::forUnmanaged(v);
   assert((!lowering.isAddressOnly() || !silConv.useLoweredAddresses()) &&
          "cannot retain an unloadable type");
@@ -128,7 +128,7 @@ ManagedValue SILGenFunction::emitManagedStoreBorrow(
     SILLocation loc, SILValue v, SILValue addr, const TypeLowering &lowering) {
   assert(lowering.getLoweredType().getObjectType() == v->getType());
   if (lowering.isTrivial() ||
-      v.getOwnershipKind() == ValueOwnershipKind::Trivial) {
+      v.getOwnershipKind() == ValueOwnershipKind::Any) {
     lowering.emitStore(B, loc, v, addr, StoreOwnershipQualifier::Trivial);
     return ManagedValue::forUnmanaged(v);
   }
@@ -152,7 +152,7 @@ SILGenFunction::emitManagedBeginBorrow(SILLocation loc, SILValue v,
   if (lowering.isTrivial())
     return ManagedValue::forUnmanaged(v);
 
-  if (v.getOwnershipKind() == ValueOwnershipKind::Trivial)
+  if (v.getOwnershipKind() == ValueOwnershipKind::Any)
     return ManagedValue::forUnmanaged(v);
 
   if (v.getOwnershipKind() == ValueOwnershipKind::Guaranteed)
@@ -274,7 +274,7 @@ SILGenFunction::emitFormalEvaluationManagedBorrowedRValueWithCleanup(
 
 ManagedValue
 SILGenFunction::emitManagedBorrowedArgumentWithCleanup(SILPhiArgument *arg) {
-  if (arg->getOwnershipKind() == ValueOwnershipKind::Trivial ||
+  if (arg->getOwnershipKind() == ValueOwnershipKind::Any ||
       arg->getType().isTrivial(arg->getModule())) {
     return ManagedValue::forUnmanaged(arg);
   }
@@ -301,7 +301,7 @@ ManagedValue SILGenFunction::emitManagedBorrowedRValueWithCleanup(
     return ManagedValue::forUnmanaged(borrowed);
 
   if (original->getType().isObject() &&
-      original.getOwnershipKind() == ValueOwnershipKind::Trivial)
+      original.getOwnershipKind() == ValueOwnershipKind::Any)
     return ManagedValue::forUnmanaged(borrowed);
 
   if (borrowed->getType().isObject()) {
@@ -323,7 +323,7 @@ ManagedValue SILGenFunction::emitManagedRValueWithCleanup(SILValue v,
   if (lowering.isTrivial())
     return ManagedValue::forUnmanaged(v);
   if (v->getType().isObject() &&
-      v.getOwnershipKind() == ValueOwnershipKind::Trivial) {
+      v.getOwnershipKind() == ValueOwnershipKind::Any) {
     return ManagedValue::forUnmanaged(v);
   }
   return ManagedValue(v, enterDestroyCleanup(v));
@@ -1054,7 +1054,7 @@ void SILGenFunction::ForceTryEmission::finish() {
     // Otherwise, we need to emit it.
     SILGenSavedInsertionPoint scope(SGF, catchBB, FunctionSection::Postmatter);
 
-    if (auto diagnoseError = SGF.getASTContext().getDiagnoseUnexpectedError(nullptr)) {
+    if (auto diagnoseError = SGF.getASTContext().getDiagnoseUnexpectedError()) {
       ASTContext &ctx = SGF.getASTContext();
       auto error = SGF.B.createOwnedPhiArgument(SILType::getExceptionType(ctx));
       auto args = SGF.emitSourceLocationArgs(Loc->getExclaimLoc(), Loc);
@@ -1766,7 +1766,7 @@ RValue RValueEmitter::visitErasureExpr(ErasureExpr *E, SGFContext C) {
   auto &existentialTL = SGF.getTypeLowering(E->getType());
   auto concreteFormalType = E->getSubExpr()->getType()->getCanonicalType();
 
-  auto archetype = ArchetypeType::getAnyOpened(E->getType());
+  auto archetype = OpenedArchetypeType::getAny(E->getType());
   AbstractionPattern abstractionPattern(archetype);
   auto &concreteTL = SGF.getTypeLowering(abstractionPattern,
                                          concreteFormalType);
@@ -1832,7 +1832,7 @@ ManagedValue SILGenFunction::getManagedValue(SILLocation loc,
   if (valueTy.isObject()) {
     // See if we have more accurate information from the ownership kind. This
     // detects trivial cases of enums.
-    if (value.getOwnershipKind() == ValueOwnershipKind::Trivial)
+    if (value.getOwnershipKind() == ValueOwnershipKind::Any)
       return ManagedValue::forUnmanaged(value.getValue());
 
     // Otherwise, copy the value and return.
@@ -1880,13 +1880,16 @@ RValue RValueEmitter::visitIsExpr(IsExpr *E, SGFContext C) {
   SILValue isa = emitIsa(SGF, E, E->getSubExpr(),
                          E->getCastTypeLoc().getType(), E->getCastKind());
 
-  // Call the _getBool library intrinsic.
+  // Call the Bool(_builtinBooleanLiteral:) initializer
   ASTContext &ctx = SGF.getASTContext();
+  auto init = ctx.getBoolBuiltinInitDecl();
+  Type builtinArgType = BuiltinIntegerType::get(1, ctx);
+  RValue builtinArg(SGF, ManagedValue::forUnmanaged(isa),
+                    builtinArgType->getCanonicalType());
   auto result =
-    SGF.emitApplyOfLibraryIntrinsic(E, ctx.getGetBoolDecl(nullptr),
-                                    SubstitutionMap(),
-                                    ManagedValue::forUnmanaged(isa),
-                                    C);
+    SGF.emitApplyAllocatingInitializer(E, ConcreteDeclRef(init),
+                                       std::move(builtinArg), Type(),
+                                       C);
   return result;
 }
 
@@ -1910,12 +1913,15 @@ RValue RValueEmitter::visitEnumIsCaseExpr(EnumIsCaseExpr *E,
                                       {{E->getEnumElement(), t}});
   }
   
-  // Call the _getBool library intrinsic.
+  // Call the Bool(_builtinBooleanLiteral:) initializer
+  auto init = ctx.getBoolBuiltinInitDecl();
+  Type builtinArgType = BuiltinIntegerType::get(1, ctx);
+  RValue builtinArg(SGF, ManagedValue::forUnmanaged(selected),
+                    builtinArgType->getCanonicalType());
   auto result =
-    SGF.emitApplyOfLibraryIntrinsic(E, ctx.getGetBoolDecl(nullptr),
-                                    SubstitutionMap(),
-                                    ManagedValue::forUnmanaged(selected),
-                                    C);
+    SGF.emitApplyAllocatingInitializer(E, ConcreteDeclRef(init),
+                                       std::move(builtinArg), Type(),
+                                       C);
   return result;
 }
 
@@ -2302,9 +2308,13 @@ static void emitTupleShuffleExprInto(RValueEmitter &emitter,
   // Map outer initializations into a tuple of inner initializations:
   //   - fill out the initialization elements with null
   TupleInitialization innerTupleInit;
-  CanTupleType innerTuple =
-    cast<TupleType>(E->getSubExpr()->getType()->getCanonicalType());
-  innerTupleInit.SubInitializations.resize(innerTuple->getNumElements());
+  if (E->isSourceScalar()) {
+    innerTupleInit.SubInitializations.push_back(nullptr);
+  } else {
+    CanTupleType innerTuple =
+      cast<TupleType>(E->getSubExpr()->getType()->getCanonicalType());
+    innerTupleInit.SubInitializations.resize(innerTuple->getNumElements());
+  }
 
   // Map all the outer initializations to their appropriate targets.
   for (unsigned outerIndex = 0; outerIndex != outerInits.size(); outerIndex++) {
@@ -2322,14 +2332,20 @@ static void emitTupleShuffleExprInto(RValueEmitter &emitter,
 #endif
 
   // Emit the sub-expression into the tuple initialization we just built.
-  emitter.SGF.emitExprInto(E->getSubExpr(), &innerTupleInit);
+  if (E->isSourceScalar()) {
+    emitter.SGF.emitExprInto(E->getSubExpr(),
+                             innerTupleInit.SubInitializations[0].get());
+  } else {
+    emitter.SGF.emitExprInto(E->getSubExpr(), &innerTupleInit);
+  }
 
   outerTupleInit->finishInitialization(emitter.SGF);
 }
 
 RValue RValueEmitter::visitTupleShuffleExpr(TupleShuffleExpr *E,
                                             SGFContext C) {
-  assert(!E->isSourceScalar());
+  // FIXME: Once we're no longer using this code path for enum element payloads,
+  // also assert that !E->isSourceScalar().
   assert(!E->isResultScalar());
 
   // If we're emitting into an initialization, we can try shuffling the
@@ -2343,7 +2359,11 @@ RValue RValueEmitter::visitTupleShuffleExpr(TupleShuffleExpr *E,
 
   // Emit the sub-expression tuple and destructure it into elements.
   SmallVector<RValue, 4> elements;
-  visit(E->getSubExpr()).extractElements(elements);
+  if (E->isSourceScalar()) {
+    elements.push_back(visit(E->getSubExpr()));
+  } else {
+    visit(E->getSubExpr()).extractElements(elements);
+  }
   
   // Prepare a new tuple to hold the shuffled result.
   RValue result(E->getType()->getCanonicalType());
@@ -2614,7 +2634,7 @@ emitKeyPathRValueBase(SILGenFunction &subSGF,
     // new one (which we'll upcast immediately below) for a class member.
     ArchetypeType *opened;
     if (storage->getDeclContext()->getSelfClassDecl()) {
-      opened = ArchetypeType::getOpened(baseType);
+      opened = OpenedArchetypeType::get(baseType);
     } else {
       opened = subs.getReplacementTypes()[0]->castTo<ArchetypeType>();
     }
@@ -3222,7 +3242,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
     subSGF.B.emitBlock(returnBB);
     scope.pop();
     SILValue returnVal = returnBB->createPhiArgument(i1Ty,
-                                                   ValueOwnershipKind::Trivial);
+                                                   ValueOwnershipKind::Any);
     auto returnBoolVal = subSGF.B.createStruct(loc,
       SILType::getPrimitiveObjectType(boolTy), returnVal);
     subSGF.B.createReturn(loc, returnBoolVal);
@@ -3362,8 +3382,6 @@ getIdForKeyPathComponentComputedProperty(SILGenModule &SGM,
     // Identify the property by its vtable or wtable slot.
     return SGM.getAccessorDeclRef(getRepresentativeAccessorForKeyPath(storage));
   }
-  case AccessStrategy::BehaviorStorage:
-    llvm_unreachable("unpossible");
   }
   llvm_unreachable("unhandled access strategy");
 }
@@ -3400,6 +3418,48 @@ lowerKeyPathSubscriptIndexTypes(
   }
 };
 
+/// Map the given protocol conformance out of context, replacing archetypes
+/// with their corresponding interface types.
+static ProtocolConformance *mapConformanceOutOfContext(
+                                         ProtocolConformance *conformance) {
+  if (!conformance->getType()->hasArchetype())
+    return conformance;
+
+  ASTContext &ctx = conformance->getProtocol()->getASTContext();
+  switch (conformance->getKind()) {
+  case ProtocolConformanceKind::Normal:
+  case ProtocolConformanceKind::Self:
+    llvm_unreachable("Normal and self conformances never have archetypes");
+
+  case ProtocolConformanceKind::Inherited: {
+    auto inherited = cast<InheritedProtocolConformance>(conformance);
+    return ctx.getInheritedConformance(
+             inherited->getType()->mapTypeOutOfContext(),
+             mapConformanceOutOfContext(inherited->getInheritedConformance()));
+  }
+
+  case ProtocolConformanceKind::Specialized: {
+    auto specialized = cast<SpecializedProtocolConformance>(conformance);
+    return ctx.getSpecializedConformance(
+             specialized->getType()->mapTypeOutOfContext(),
+             mapConformanceOutOfContext(specialized->getGenericConformance()),
+             specialized->getSubstitutionMap()
+               .mapReplacementTypesOutOfContext());
+  }
+  }
+}
+
+/// Map the given protocol conformance out of context, replacing archetypes
+/// with their corresponding interface types.
+static ProtocolConformanceRef mapConformanceOutOfContext(
+                                          ProtocolConformanceRef conformance) {
+  if (conformance.isAbstract())
+    return conformance;
+
+  return ProtocolConformanceRef(
+                        mapConformanceOutOfContext(conformance.getConcrete()));
+}
+
 static void
 lowerKeyPathSubscriptIndexPatterns(
                  SmallVectorImpl<KeyPathPatternComponent::Index> &indexPatterns,
@@ -3410,10 +3470,9 @@ lowerKeyPathSubscriptIndexPatterns(
     CanType formalTy;
     SILType loweredTy;
     std::tie(formalTy, loweredTy) = indexTypes[i];
-    auto hashable = indexHashables[i];
+    auto hashable = mapConformanceOutOfContext(indexHashables[i]);
     assert(hashable.isAbstract() ||
-           hashable.getConcrete()->getType()->mapTypeOutOfContext()
-                                 ->isEqual(formalTy));
+           hashable.getConcrete()->getType()->isEqual(formalTy));
 
     indexPatterns.push_back({baseOperand++, formalTy, loweredTy, hashable});
   }
@@ -4317,9 +4376,6 @@ namespace {
 
     // If the destination is a tuple, recursively destructure.
     void visitTupleExpr(TupleExpr *E) {
-      auto *TTy = E->getType()->castTo<TupleType>();
-      assert(TTy->hasLValueType() || TTy->isVoid());
-      (void)TTy;
       for (auto &elt : E->getElements()) {
         visit(elt);
       }
@@ -4432,7 +4488,6 @@ static void emitSimpleAssignment(SILGenFunction &SGF, SILLocation loc,
 
   // Handle tuple destinations by destructuring them if present.
   CanType destType = dest->getType()->getCanonicalType();
-  assert(!destType->isMaterializable() || destType->isVoid());
 
   // But avoid this in the common case.
   if (!isa<TupleType>(destType)) {
@@ -5210,7 +5265,7 @@ ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc, LValue &&lv,
   
   // Invoke the conversion intrinsic.
   FuncDecl *converter =
-    getASTContext().getConvertInOutToPointerArgument(nullptr);
+    getASTContext().getConvertInOutToPointerArgument();
 
   auto pointerType = pointerInfo.PointerType;
   auto subMap = pointerType->getContextSubstitutionMap(SGM.M.getSwiftModule(),
@@ -5264,12 +5319,12 @@ SILGenFunction::emitArrayToPointer(SILLocation loc, ManagedValue array,
   FuncDecl *converter;
   if (accessInfo.AccessKind != SGFAccessKind::ReadWrite) {
     assert(isReadAccess(accessInfo.AccessKind));
-    converter = ctx.getConvertConstArrayToPointerArgument(nullptr);
+    converter = ctx.getConvertConstArrayToPointerArgument();
     if (array.isLValue())
       array = B.createLoadCopy(loc, array);
 
   } else {
-    converter = ctx.getConvertMutableArrayToPointerArgument(nullptr);
+    converter = ctx.getConvertMutableArrayToPointerArgument();
     assert(array.isLValue());
   }
 
@@ -5315,7 +5370,7 @@ std::pair<ManagedValue, ManagedValue>
 SILGenFunction::emitStringToPointer(SILLocation loc, ManagedValue stringValue,
                                     Type pointerType) {
   auto &Ctx = getASTContext();
-  FuncDecl *converter = Ctx.getConvertConstStringToUTF8PointerArgument(nullptr);
+  FuncDecl *converter = Ctx.getConvertConstStringToUTF8PointerArgument();
   
   // Invoke the conversion intrinsic, which will produce an owner-pointer pair.
   auto subMap = pointerType->getContextSubstitutionMap(SGM.M.getSwiftModule(),
@@ -5336,7 +5391,7 @@ SILGenFunction::emitStringToPointer(SILLocation loc, ManagedValue stringValue,
 RValue RValueEmitter::visitPointerToPointerExpr(PointerToPointerExpr *E,
                                                 SGFContext C) {
   auto &Ctx = SGF.getASTContext();
-  auto converter = Ctx.getConvertPointerToPointerArgument(nullptr);
+  auto converter = Ctx.getConvertPointerToPointerArgument();
 
   // Get the original pointer value, abstracted to the converter function's
   // expected level.

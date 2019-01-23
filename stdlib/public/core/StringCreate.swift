@@ -38,7 +38,7 @@ extension String {
       return String(_StringGuts(smol))
     }
 
-    let storage = _StringStorage.create(initializingFrom: input, isASCII: true)
+    let storage = __StringStorage.create(initializingFrom: input, isASCII: true)
     return storage.asString
   }
 
@@ -83,7 +83,7 @@ extension String {
       return String(_StringGuts(smol))
     }
 
-    let storage = _StringStorage.create(
+    let storage = __StringStorage.create(
       initializingFrom: input, isASCII: isASCII)
     return storage.asString
   }
@@ -98,7 +98,7 @@ extension String {
     }
 
     let isASCII = asciiPreScanResult
-    let storage = _StringStorage.create(
+    let storage = __StringStorage.create(
       initializingFrom: input, isASCII: isASCII)
     return storage.asString
   }
@@ -168,6 +168,17 @@ extension String {
     _ utf16: UnsafeBufferPointer<UInt16>
   ) -> String {
     return String._fromCodeUnits(utf16, encoding: UTF16.self, repair: true)!.0
+  }
+
+  @usableFromInline
+  internal static func _fromSubstring(
+    _ substring: __shared Substring
+  ) -> String {
+    if substring._offsetRange == substring._wholeString._offsetRange {
+      return substring._wholeString
+    }
+
+    return substring._withUTF8 { return String._uncheckedFromUTF8($0) }
   }
 }
 

@@ -144,16 +144,6 @@ TypeChecker::gatherGenericParamBindingsText(
   return result.str().str();
 }
 
-void
-TypeChecker::prepareGenericParamList(GenericParamList *gp,
-                                     DeclContext *dc) {
-  unsigned depth = gp->getDepth();
-  for (auto paramDecl : *gp) {
-    checkDeclAttributesEarly(paramDecl);
-    paramDecl->setDepth(depth);
-  }
-}
-
 /// Add the generic parameter types from the given list to the vector.
 static void addGenericParamTypes(GenericParamList *gpList,
                                  SmallVectorImpl<GenericTypeParamType *> &params) {
@@ -430,7 +420,7 @@ void TypeChecker::checkReferencedGenericParams(GenericContext *dc) {
   };
 
   // Find the depth of the function's own generic parameters.
-  unsigned fnGenericParamsDepth = genericParams->getDepth();
+  unsigned fnGenericParamsDepth = genericParams->getParams().front()->getDepth();
 
   // Check that every generic parameter type from the signature is
   // among referencedGenericParams.
@@ -473,8 +463,7 @@ computeGenericFuncSignature(TypeChecker &tc, AbstractFunctionDecl *func) {
 
   // Do some initial configuration of the generic parameter lists that's
   // required in all cases.
-  gp->setOuterParameters(dc->getGenericParamsOfContext());
-  tc.prepareGenericParamList(gp, func);
+  gp->setDepth(func->getGenericContextDepth());
 
   // Accessors can always use the generic context of their storage
   // declarations.  This is a compile-time optimization since it lets us
@@ -609,8 +598,7 @@ TypeChecker::validateGenericSubscriptSignature(SubscriptDecl *subscript) {
 
   GenericSignature *sig;
   if (auto *gp = subscript->getGenericParams()) {
-    gp->setOuterParameters(dc->getGenericParamsOfContext());
-    prepareGenericParamList(gp, subscript);
+    gp->setDepth(subscript->getGenericContextDepth());
 
     // Create the generic signature builder.
     GenericSignatureBuilder builder(Context);
@@ -696,7 +684,8 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
 
   GenericSignature *sig;
   if (!ext || mustInferRequirements || ext->getTrailingWhereClause() ||
-      getExtendedTypeGenericDepth(ext) != genericParams->getDepth()) {
+      getExtendedTypeGenericDepth(ext) !=
+      genericParams->getParams().back()->getDepth()) {
     // Collect the generic parameters.
     SmallVector<GenericTypeParamType *, 4> allGenericParams;
     if (recursivelyVisitGenericParams) {
@@ -721,11 +710,11 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
     if (recursivelyVisitGenericParams) {
       visitOuterToInner(genericParams,
                         [&](GenericParamList *gpList) {
-      auto genericParamsDC = gpList->begin()[0]->getDeclContext();
-      TypeResolution structuralResolution =
-        TypeResolution::forStructural(genericParamsDC);
-        checkGenericParamList(*this, &builder, gpList, nullptr,
-                              structuralResolution);
+        auto genericParamsDC = gpList->begin()[0]->getDeclContext();
+        TypeResolution structuralResolution =
+          TypeResolution::forStructural(genericParamsDC);
+          checkGenericParamList(*this, &builder, gpList, nullptr,
+                                structuralResolution);
       });
     } else {
       auto genericParamsDC = genericParams->begin()[0]->getDeclContext();
@@ -765,7 +754,39 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
 }
 
 void TypeChecker::validateGenericTypeSignature(GenericTypeDecl *typeDecl) {
+  if (auto *proto = dyn_cast<ProtocolDecl>(typeDecl)) {
+    // Compute the requirement signature first.
+    if (!proto->isRequirementSignatureComputed())
+      proto->computeRequirementSignature();
+
+    // The generic signature and environment is created lazily by
+    // GenericContext::getGenericSignature(), so there is nothing we
+    // need to do.
+
+    // Debugging of the generic signature builder and generic signature
+    // generation.
+    if (Context.LangOpts.DebugGenericSignatures) {
+      auto *sig = proto->getGenericSignature();
+
+      proto->printContext(llvm::errs());
+      llvm::errs() << "\n";
+      llvm::errs() << "Generic signature: ";
+      sig->print(llvm::errs());
+      llvm::errs() << "\n";
+      llvm::errs() << "Canonical generic signature: ";
+      sig->getCanonicalSignature()->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+
+    return;
+  }
+
   assert(!typeDecl->getGenericEnvironment());
+
+  // We don't go down this path for protocols; instead, the generic signature
+  // is simple enough that GenericContext::getGenericSignature() can build it
+  // directly.
+  assert(!isa<ProtocolDecl>(typeDecl));
 
   auto *gp = typeDecl->getGenericParams();
   auto *dc = typeDecl->getDeclContext();
@@ -776,16 +797,7 @@ void TypeChecker::validateGenericTypeSignature(GenericTypeDecl *typeDecl) {
     return;
   }
 
-  gp->setOuterParameters(dc->getGenericParamsOfContext());
-
-  prepareGenericParamList(gp, typeDecl);
-
-  // For a protocol, compute the requirement signature first. It will be used
-  // by clients of the protocol.
-  if (auto proto = dyn_cast<ProtocolDecl>(typeDecl)) {
-    if (!proto->isRequirementSignatureComputed())
-      proto->computeRequirementSignature();
-  }
+  gp->setDepth(typeDecl->getGenericContextDepth());
 
   auto *env = checkGenericEnvironment(gp, dc,
                                       dc->getGenericSignatureOfContext(),

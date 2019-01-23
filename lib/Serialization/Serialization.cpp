@@ -475,6 +475,8 @@ static const Decl *getDeclForContext(const DeclContext *DC) {
     return cast<AbstractFunctionDecl>(DC);
   case DeclContextKind::SubscriptDecl:
     return cast<SubscriptDecl>(DC);
+  case DeclContextKind::EnumElementDecl:
+    return cast<EnumElementDecl>(DC);
   }
 
   llvm_unreachable("Unhandled DeclContextKind in switch.");
@@ -655,7 +657,7 @@ DeclID Serializer::addDeclRef(const Decl *D, bool allowTypeAliasXRef) {
 
   assert((allowTypeAliasXRef || !isa<TypeAliasDecl>(D) ||
           D->getModuleContext() == M) &&
-         "cannot cross-reference typealiases directly (use the NameAliasType)");
+         "cannot cross-reference typealiases directly (use the TypeAliasType)");
 
   id = ++LastDeclID;
   DeclsAndTypesToWrite.push(D);
@@ -1350,9 +1352,15 @@ void Serializer::writeGenericRequirements(ArrayRef<Requirement> requirements,
 void Serializer::writeInlinableBodyTextIfNeeded(
   const AbstractFunctionDecl *AFD) {
   using namespace decls_block;
+  // Only serialize the text for an inlinable function body if we're emitting
+  // a partial module. It's not needed in the final module file, but it's
+  // needed in partial modules so you can emit a parseable interface after
+  // merging them.
+  if (!SF) return;
 
   if (AFD->getResilienceExpansion() != swift::ResilienceExpansion::Minimal)
     return;
+
   if (!AFD->hasInlinableBodyText()) return;
   SmallString<128> scratch;
   auto body = AFD->getInlinableBodyText(scratch);
@@ -1869,6 +1877,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
   case DeclContextKind::Initializer:
   case DeclContextKind::TopLevelCodeDecl:
   case DeclContextKind::SerializedLocal:
+  case DeclContextKind::EnumElementDecl:
     llvm_unreachable("cannot cross-reference this context");
 
   case DeclContextKind::FileUnit:
@@ -1893,10 +1902,12 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
       discriminator = containingFile->getDiscriminatorForPrivateValue(generic);
     }
 
+    bool isProtocolExt = DC->getParent()->getExtendedProtocolDecl();
+
     XRefTypePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                         addDeclBaseNameRef(generic->getName()),
                                         addDeclBaseNameRef(discriminator),
-                                        /*inProtocolExtension*/false,
+                                        isProtocolExt,
                                         generic->hasClangNode());
     break;
   }
@@ -2310,6 +2321,7 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
         theAttr->isImplicit(),
         theAttr->isUnconditionallyUnavailable(),
         theAttr->isUnconditionallyDeprecated(),
+        theAttr->isPackageDescriptionVersionSpecific(),
         LIST_VER_TUPLE_PIECES(Introduced),
         LIST_VER_TUPLE_PIECES(Deprecated),
         LIST_VER_TUPLE_PIECES(Obsoleted),
@@ -2433,6 +2445,7 @@ void Serializer::writeDeclContext(const DeclContext *DC) {
   case DeclContextKind::SubscriptDecl:
   case DeclContextKind::GenericTypeDecl:
   case DeclContextKind::ExtensionDecl:
+  case DeclContextKind::EnumElementDecl:
     declOrDeclContextID = addDeclRef(getDeclForContext(DC));
     isDecl = true;
     break;
@@ -3737,13 +3750,13 @@ void Serializer::writeType(Type ty) {
                                        TypeID());
     break;
   }
-  case TypeKind::NameAlias: {
-    auto alias = cast<NameAliasType>(ty.getPointer());
+  case TypeKind::TypeAlias: {
+    auto alias = cast<TypeAliasType>(ty.getPointer());
     const TypeAliasDecl *typeAlias = alias->getDecl();
     auto underlyingType = typeAlias->getUnderlyingTypeLoc().getType();
 
-    unsigned abbrCode = DeclTypeAbbrCodes[NameAliasTypeLayout::Code];
-    NameAliasTypeLayout::emitRecord(
+    unsigned abbrCode = DeclTypeAbbrCodes[TypeAliasTypeLayout::Code];
+    TypeAliasTypeLayout::emitRecord(
                            Out, ScratchRecord, abbrCode,
                            addDeclRef(typeAlias, /*allowTypeAliasXRef*/true),
                            addTypeRef(alias->getParent()),
@@ -3831,18 +3844,11 @@ void Serializer::writeType(Type ty) {
     break;
   }
 
-  case TypeKind::Archetype: {
+  case TypeKind::PrimaryArchetype:
+  case TypeKind::NestedArchetype: {
     auto archetypeTy = cast<ArchetypeType>(ty.getPointer());
 
-    // Opened existential types use a separate layout.
-    if (auto existentialTy = archetypeTy->getOpenedExistentialType()) {
-      unsigned abbrCode = DeclTypeAbbrCodes[OpenedExistentialTypeLayout::Code];
-      OpenedExistentialTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                              addTypeRef(existentialTy));
-      break;
-    }
-
-    auto env = archetypeTy->getGenericEnvironment();
+    auto env = archetypeTy->getPrimary()->getGenericEnvironment();
     assert(env && "Primary archetype without generic environment?");
 
     GenericEnvironmentID envID = addGenericEnvironmentRef(env);
@@ -3851,6 +3857,14 @@ void Serializer::writeType(Type ty) {
     unsigned abbrCode = DeclTypeAbbrCodes[ArchetypeTypeLayout::Code];
     ArchetypeTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                     envID, addTypeRef(interfaceType));
+    break;
+  }
+
+  case TypeKind::OpenedArchetype: {
+    auto archetypeTy = cast<OpenedArchetypeType>(ty.getPointer());
+    unsigned abbrCode = DeclTypeAbbrCodes[OpenedExistentialTypeLayout::Code];
+    OpenedExistentialTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
+                           addTypeRef(archetypeTy->getOpenedExistentialType()));
     break;
   }
 
@@ -4104,7 +4118,7 @@ void Serializer::writeAllDeclsAndTypes() {
   BCBlockRAII restoreBlock(Out, DECLS_AND_TYPES_BLOCK_ID, 8);
   using namespace decls_block;
   registerDeclTypeAbbr<BuiltinAliasTypeLayout>();
-  registerDeclTypeAbbr<NameAliasTypeLayout>();
+  registerDeclTypeAbbr<TypeAliasTypeLayout>();
   registerDeclTypeAbbr<GenericTypeParamDeclLayout>();
   registerDeclTypeAbbr<AssociatedTypeDeclLayout>();
   registerDeclTypeAbbr<NominalTypeLayout>();

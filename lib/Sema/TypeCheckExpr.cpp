@@ -555,21 +555,21 @@ static Expr *foldSequence(TypeChecker &TC, DeclContext *DC,
 }
 
 bool TypeChecker::requireOptionalIntrinsics(SourceLoc loc) {
-  if (Context.hasOptionalIntrinsics(this)) return false;
+  if (Context.hasOptionalIntrinsics()) return false;
 
   diagnose(loc, diag::optional_intrinsics_not_found);
   return true;
 }
 
 bool TypeChecker::requirePointerArgumentIntrinsics(SourceLoc loc) {
-  if (Context.hasPointerArgumentIntrinsics(this)) return false;
+  if (Context.hasPointerArgumentIntrinsics()) return false;
 
   diagnose(loc, diag::pointer_argument_intrinsics_not_found);
   return true;
 }
 
 bool TypeChecker::requireArrayLiteralIntrinsics(SourceLoc loc) {
-  if (Context.hasArrayLiteralIntrinsics(this)) return false;
+  if (Context.hasArrayLiteralIntrinsics()) return false;
   
   diagnose(loc, diag::array_literal_intrinsics_not_found);
   return true;
@@ -658,6 +658,7 @@ static Type lookupDefaultLiteralType(TypeChecker &TC, DeclContext *dc,
 Type TypeChecker::getDefaultType(ProtocolDecl *protocol, DeclContext *dc) {
   Type *type = nullptr;
   const char *name = nullptr;
+  bool performLocalLookup = true;
 
   // ExpressibleByUnicodeScalarLiteral -> UnicodeScalarType
   if (protocol ==
@@ -711,6 +712,7 @@ Type TypeChecker::getDefaultType(ProtocolDecl *protocol, DeclContext *dc) {
                                    KnownProtocolKind::ExpressibleByArrayLiteral)){
     type = &ArrayLiteralType;
     name = "Array";
+    performLocalLookup = false;
   }
   // ExpressibleByDictionaryLiteral -> Dictionary
   else if (protocol == getProtocol(
@@ -718,6 +720,7 @@ Type TypeChecker::getDefaultType(ProtocolDecl *protocol, DeclContext *dc) {
                          KnownProtocolKind::ExpressibleByDictionaryLiteral)) {
     type = &DictionaryLiteralType;
     name = "Dictionary";
+    performLocalLookup = false;
   }
   // _ExpressibleByColorLiteral -> _ColorLiteralType
   else if (protocol == getProtocol(
@@ -746,7 +749,8 @@ Type TypeChecker::getDefaultType(ProtocolDecl *protocol, DeclContext *dc) {
 
   // If we haven't found the type yet, look for it now.
   if (!*type) {
-    *type = lookupDefaultLiteralType(*this, dc, name);
+    if (performLocalLookup)
+      *type = lookupDefaultLiteralType(*this, dc, name);
 
     if (!*type)
       *type = lookupDefaultLiteralType(*this, getStdlibModule(dc), name);
@@ -755,7 +759,7 @@ Type TypeChecker::getDefaultType(ProtocolDecl *protocol, DeclContext *dc) {
     // the name of the typealias itself anywhere.
     if (type && *type) {
       if (auto boundTypeAlias =
-                 dyn_cast<NameAliasType>(type->getPointer()))
+                 dyn_cast<TypeAliasType>(type->getPointer()))
         *type = boundTypeAlias->getSinglyDesugaredType();
     }
   }

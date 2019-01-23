@@ -298,15 +298,15 @@ public:
   /// createBasicBlock().)
   FunctionSection CurFunctionSection = FunctionSection::Ordinary;
 
-  /// \brief Does this function require a non-void direct return?
+  /// Does this function require a non-void direct return?
   bool NeedsReturn = false;
 
-  /// \brief Is emission currently within a formal modification?
+  /// Is emission currently within a formal modification?
   bool isInFormalEvaluationScope() const {
     return FormalEvalContext.isInFormalEvaluationScope();
   }
 
-  /// \brief Is emission currently within an inout conversion?
+  /// Is emission currently within an inout conversion?
   bool InInOutConversionScope = false;
 
   /// The SILGenBuilder used to construct the SILFunction.  It is what maintains
@@ -343,13 +343,13 @@ public:
   /// be in the postmatter.
   JumpDest CoroutineUnwindDest = JumpDest::invalid();
     
-  /// \brief The SIL location corresponding to the AST node being processed.
+  /// The SIL location corresponding to the AST node being processed.
   SILLocation CurrentSILLoc;
 
-  /// \brief This records information about the currently active cleanups.
+  /// This records information about the currently active cleanups.
   CleanupManager Cleanups;
 
-  /// \brief The current context where formal evaluation cleanups are managed.
+  /// The current context where formal evaluation cleanups are managed.
   FormalEvaluationContext FormalEvalContext;
 
   /// VarLoc - representation of an emitted local variable or constant.  There
@@ -559,9 +559,9 @@ public:
   // Entry points for codegen
   //===--------------------------------------------------------------------===//
   
-  /// \brief Generates code for a FuncDecl.
+  /// Generates code for a FuncDecl.
   void emitFunction(FuncDecl *fd);
-  /// \brief Emits code for a ClosureExpr.
+  /// Emits code for a ClosureExpr.
   void emitClosure(AbstractClosureExpr *ce);
   /// Generates code for a class destroying destructor. This
   /// emits the body code from the DestructorDecl, calls the base class 
@@ -651,7 +651,8 @@ public:
                            SubstitutionMap reqtSubs,
                            SILDeclRef witness,
                            SubstitutionMap witnessSubs,
-                           IsFreeFunctionWitness_t isFree);
+                           IsFreeFunctionWitness_t isFree,
+                           bool isSelfConformance);
   
   /// Convert a block to a native function with a thunk.
   ManagedValue emitBlockToFunc(SILLocation loc,
@@ -666,12 +667,6 @@ public:
                                CanAnyFunctionType funcTy,
                                CanAnyFunctionType blockTy,
                                CanSILFunctionType loweredBlockTy);
-
-  /// Given a non-canonical function type, create a thunk for the function's
-  /// canonical type.
-  ManagedValue emitCanonicalFunctionThunk(SILLocation loc, ManagedValue fn,
-                                          CanSILFunctionType nonCanonicalTy,
-                                          CanSILFunctionType canonicalTy);
 
   /// Thunk with the signature of a base class method calling a derived class
   /// method.
@@ -775,7 +770,7 @@ public:
   void bindParametersForForwarding(const ParameterList *params,
                                    SmallVectorImpl<SILValue> &parameters);
 
-  /// \brief Create (but do not emit) the epilog branch, and save the
+  /// Create (but do not emit) the epilog branch, and save the
   /// current cleanups depth as the destination for return statement branches.
   ///
   /// \param returnType  If non-null, the epilog block will be created with an
@@ -788,7 +783,7 @@ public:
   void prepareRethrowEpilog(CleanupLocation l);
   void prepareCoroutineUnwindEpilog(CleanupLocation l);
   
-  /// \brief Branch to and emit the epilog basic block. This will fuse
+  /// Branch to and emit the epilog basic block. This will fuse
   /// the epilog to the current basic block if the epilog bb has no predecessor.
   /// The insertion point will be moved into the epilog block if it is
   /// reachable.
@@ -804,7 +799,7 @@ public:
   std::pair<Optional<SILValue>, SILLocation>
     emitEpilogBB(SILLocation TopLevelLoc);
   
-  /// \brief Emits a standard epilog which runs top-level cleanups then returns
+  /// Emits a standard epilog which runs top-level cleanups then returns
   /// the function return value, if any.  This can be customized by clients, who
   /// set UsesCustomEpilog to true, and optionally inject their own code into
   /// the epilog block before calling this.  If they do this, their code is run
@@ -819,10 +814,10 @@ public:
   ///        logic.
   SILLocation emitEpilog(SILLocation TopLevelLoc,bool UsesCustomEpilog = false);
 
-  /// \brief Emits the standard rethrow epilog using a Swift error result.
+  /// Emits the standard rethrow epilog using a Swift error result.
   void emitRethrowEpilog(SILLocation topLevelLoc);
 
-  /// \brief Emits the coroutine-unwind epilog.
+  /// Emits the coroutine-unwind epilog.
   void emitCoroutineUnwindEpilog(SILLocation topLevelLoc);
 
   /// emitSelfDecl - Emit a SILArgument for 'self', register it in varlocs, set
@@ -912,19 +907,19 @@ public:
   SourceLocArgs
   emitSourceLocationArgs(SourceLoc loc, SILLocation emitLoc);
 
-  /// \brief Emit a call to the library intrinsic _doesOptionalHaveValue.
+  /// Emit a call to the library intrinsic _doesOptionalHaveValue.
   ///
   /// The result is a Builtin.Int1.
   SILValue emitDoesOptionalHaveValue(SILLocation loc, SILValue addrOrValue);
 
-  /// \brief Emit a switch_enum to call the library intrinsic
+  /// Emit a switch_enum to call the library intrinsic
   /// _diagnoseUnexpectedNilOptional if the optional has no value. Return the
   /// MangedValue resulting from the success case.
   ManagedValue emitPreconditionOptionalHasValue(SILLocation loc,
                                                 ManagedValue optional,
                                                 bool isImplicitUnwrap);
 
-  /// \brief Emit a call to the library intrinsic _getOptionalValue
+  /// Emit a call to the library intrinsic _getOptionalValue
   /// given the address of the optional, which checks that an optional contains
   /// some value and either returns the value or traps if there is none.
   ManagedValue emitCheckedGetOptionalValueFrom(SILLocation loc,
@@ -933,7 +928,7 @@ public:
                                                const TypeLowering &optTL,
                                                SGFContext C);
   
-  /// \brief Extract the value from an optional, which must be known to contain
+  /// Extract the value from an optional, which must be known to contain
   /// a value.
   ManagedValue emitUncheckedGetOptionalValueFrom(SILLocation loc,
                                                  ManagedValue addrOrValue,
@@ -1000,7 +995,7 @@ public:
                       SILType loweredOpenedType,
                       AccessKind accessKind);
 
-  /// \brief Wrap the given value in an existential container.
+  /// Wrap the given value in an existential container.
   ///
   /// \param concreteFormalType AST type of value.
   /// \param concreteTL Type lowering of value.
@@ -1342,6 +1337,8 @@ public:
                                            SILValue semanticValue,
                                            SILType storageType);
 
+  SILValue emitUnwrapIntegerResult(SILLocation loc, SILValue value);
+  
   /// Load an r-value out of the given address. This does not handle
   /// reabstraction or bridging. If that is needed, use the other emit load
   /// entry point.
@@ -1471,6 +1468,10 @@ public:
                                      ArrayRef<ManagedValue> args,
                                      SGFContext ctx);
 
+  RValue emitApplyAllocatingInitializer(SILLocation loc, ConcreteDeclRef init,
+                                        RValue &&args, Type overriddenSelfType,
+                                        SGFContext ctx);
+
   CleanupHandle emitBeginApply(SILLocation loc, ManagedValue fn,
                                SubstitutionMap subs, ArrayRef<ManagedValue> args,
                                CanSILFunctionType substFnType,
@@ -1574,7 +1575,7 @@ public:
     ~OpaqueValueRAII();
   };
 
-  /// \brief Emit a conditional checked cast branch. Does not
+  /// Emit a conditional checked cast branch. Does not
   /// re-abstract the argument to the success branch. Terminates the
   /// current BB.
   ///
@@ -1596,7 +1597,7 @@ public:
       ProfileCounter TrueCount = ProfileCounter(),
       ProfileCounter FalseCount = ProfileCounter());
 
-  /// \brief Emit a conditional checked cast branch, starting from an
+  /// Emit a conditional checked cast branch, starting from an
   /// expression.  Terminates the current BB.
   ///
   /// \param loc          The AST location associated with the operation.
@@ -1754,6 +1755,7 @@ public:
                                     CanType &outputSubstType,
                                     GenericEnvironment *&genericEnv,
                                     SubstitutionMap &interfaceSubs,
+                                    CanType &dynamicSelfType,
                                     bool withoutActuallyEscaping=false);
 
   //===--------------------------------------------------------------------===//

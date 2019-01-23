@@ -796,11 +796,6 @@ static Type getArrayElementType(Type ty) {
   return Type();
 }
 
-// TODO: Refactor this to someplace common, this is defined in Devirtualize.cpp.
-SubstitutionMap getWitnessMethodSubstitutions(SILModule &Module, ApplySite AI,
-                                              SILFunction *F,
-                                              ProtocolConformanceRef CRef);
-
 /// Given a call to a function, determine whether it is a call to a constexpr
 /// function.  If so, collect its arguments as constants, fold it and return
 /// None.  If not, mark the results as Unknown, and return an Unknown with

@@ -348,7 +348,6 @@ static StringRef getAccessSemanticsString(AccessSemantics value) {
     case AccessSemantics::Ordinary: return "ordinary";
     case AccessSemantics::DirectToStorage: return "direct_to_storage";
     case AccessSemantics::DirectToImplementation: return "direct_to_impl";
-    case AccessSemantics::BehaviorInitialization: return "behavior_init";
   }
 
   llvm_unreachable("Unhandled AccessSemantics in switch.");
@@ -1334,6 +1333,10 @@ void swift::printContext(raw_ostream &os, DeclContext *dc) {
   case DeclContextKind::SubscriptDecl:
     printName(os, cast<SubscriptDecl>(dc)->getFullName());
     break;
+
+  case DeclContextKind::EnumElementDecl:
+    printName(os, cast<EnumElementDecl>(dc)->getFullName());
+    break;
   }
 }
 
@@ -1439,7 +1442,8 @@ public:
           cast<PlatformVersionConstraintAvailabilitySpec>(Query)->print(OS, Indent + 2);
           break;
         case AvailabilitySpecKind::LanguageVersionConstraint:
-          cast<LanguageVersionConstraintAvailabilitySpec>(Query)->print(OS, Indent + 2);
+        case AvailabilitySpecKind::PackageDescriptionVersionConstraint:
+          cast<PlatformVersionConstraintAvailabilitySpec>(Query)->print(OS, Indent + 2);
           break;
         case AvailabilitySpecKind::OtherPlatform:
           cast<OtherPlatformAvailabilitySpec>(Query)->print(OS, Indent + 2);
@@ -3241,8 +3245,8 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
 
-    void visitNameAliasType(NameAliasType *T, StringRef label) {
-      printCommon(label, "name_alias_type");
+    void visitTypeAliasType(TypeAliasType *T, StringRef label) {
+      printCommon(label, "type_alias_type");
       printField("decl", T->getDecl()->printRef());
       if (T->getParent())
         printRec("parent", T->getParent());
@@ -3345,37 +3349,24 @@ namespace {
       printRec(T->getSelfType());
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
-
-    void visitArchetypeType(ArchetypeType *T, StringRef label) {
-      printCommon(label, "archetype_type");
-      auto openedExistential = T->getOpenedExistentialType();
-      if (openedExistential)
-        printField("opened_existential_id", T->getOpenedExistentialID());
-      else
-        printField("name", T->getFullName());
+    
+    void printArchetypeCommon(ArchetypeType *T,
+                              StringRef className,
+                              StringRef label) {
+      printCommon(label, className);
       printField("address", static_cast<void *>(T));
       printFlag(T->requiresClass(), "class");
+      if (auto layout = T->getLayoutConstraint()) {
+        OS << " layout=";
+        layout->print(OS);
+      }
       for (auto proto : T->getConformsTo())
         printField("conforms_to", proto->printRef());
-      if (auto parent = T->getParent())
-        printField("parent", static_cast<void *>(parent));
-      if (!openedExistential) {
-        if (auto assocType = T->getAssocType())
-          printField("assoc_type", assocType->printRef());
-      }
-      // FIXME: This is ugly.
-      OS << "\n";
-      if (auto genericEnv = T->getGenericEnvironment()) {
-        if (auto owningDC = genericEnv->getOwningDeclContext()) {
-          owningDC->printContext(OS, Indent + 2);
-        }
-      }
-
       if (auto superclass = T->getSuperclass())
         printRec("superclass", superclass);
-      if (openedExistential)
-        printRec("opened_existential", openedExistential);
-
+    }
+    
+    void printArchetypeNestedTypes(ArchetypeType *T) {
       Indent += 2;
       for (auto nestedType : T->getKnownNestedTypes()) {
         OS << "\n";
@@ -3392,7 +3383,32 @@ namespace {
         OS << ")";
       }
       Indent -= 2;
+    }
 
+    void visitPrimaryArchetypeType(PrimaryArchetypeType *T, StringRef label) {
+      printArchetypeCommon(T, "primary_archetype_type", label);
+      printField("name", T->getFullName());
+      OS << "\n";
+      auto genericEnv = T->getGenericEnvironment();
+      if (auto owningDC = genericEnv->getOwningDeclContext()) {
+        owningDC->printContext(OS, Indent + 2);
+      }
+      printArchetypeNestedTypes(T);
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    }
+    void visitNestedArchetypeType(NestedArchetypeType *T, StringRef label) {
+      printArchetypeCommon(T, "nested_archetype_type", label);
+      printField("name", T->getFullName());
+      printField("parent", T->getParent());
+      printField("assoc_type", T->getAssocType()->printRef());
+      printArchetypeNestedTypes(T);
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    }
+    void visitOpenedArchetypeType(OpenedArchetypeType *T, StringRef label) {
+      printArchetypeCommon(T, "opened_archetype_type", label);
+      printRec("opened_existential", T->getOpenedExistentialType());
+      printField("opened_existential_id", T->getOpenedExistentialID());
+      printArchetypeNestedTypes(T);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
 

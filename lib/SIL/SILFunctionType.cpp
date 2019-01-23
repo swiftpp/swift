@@ -1109,15 +1109,17 @@ static void destructureYieldsForCoroutine(SILModule &M,
                          .getReferenceStorageReferentType();
 
   auto storage = accessor->getStorage();
-  auto valueType = storage->getValueInterfaceType()
-                          ->getReferenceStorageReferent();
+  auto valueType = storage->getValueInterfaceType();
   if (reqtSubs) {
     valueType = valueType.subst(*reqtSubs);
   }
 
+  auto canValueType = valueType->getCanonicalType(
+    accessor->getGenericSignature());
+
   // 'modify' yields an inout of the target type.
   if (accessor->getAccessorKind() == AccessorKind::Modify) {
-    auto loweredValueTy = M.Types.getLoweredType(origType, valueType);
+    auto loweredValueTy = M.Types.getLoweredType(origType, canValueType);
     yields.push_back(SILYieldInfo(loweredValueTy.getASTType(),
                                   ParameterConvention::Indirect_Inout));
     return;
@@ -1126,8 +1128,7 @@ static void destructureYieldsForCoroutine(SILModule &M,
   // 'read' yields a borrowed value of the target type, destructuring
   // tuples as necessary.
   assert(accessor->getAccessorKind() == AccessorKind::Read);
-  destructureYieldsForReadAccessor(M, origType, valueType->getCanonicalType(),
-                                   yields);
+  destructureYieldsForReadAccessor(M, origType, canValueType, yields);
 }
 
 /// Create the appropriate SIL function type for the given formal type
@@ -2799,7 +2800,8 @@ SILFunctionType::substGenericArgs(SILModule &silModule,
 CanAnyFunctionType
 TypeConverter::getBridgedFunctionType(AbstractionPattern pattern,
                                       CanAnyFunctionType t,
-                                      AnyFunctionType::ExtInfo extInfo) {
+                                      AnyFunctionType::ExtInfo extInfo,
+                                      Bridgeability bridging) {
   // Pull out the generic signature.
   CanGenericSignature genericSig = t.getOptGenericSignature();
 
@@ -2822,12 +2824,13 @@ TypeConverter::getBridgedFunctionType(AbstractionPattern pattern,
   case SILFunctionTypeRepresentation::Block:
   case SILFunctionTypeRepresentation::ObjCMethod: {
     SmallVector<AnyFunctionType::Param, 8> params;
-    getBridgedParams(rep, pattern, t->getParams(), params);
+    getBridgedParams(rep, pattern, t->getParams(), params, bridging);
 
     bool suppressOptional = pattern.hasForeignErrorStrippingResultOptionality();
     auto result = getBridgedResultType(rep,
                                        pattern.getFunctionResultType(),
                                        t.getResult(),
+                                       bridging,
                                        suppressOptional);
 
     return CanAnyFunctionType::get(genericSig, llvm::makeArrayRef(params),
@@ -2898,6 +2901,10 @@ getAbstractionPatternForConstant(ASTContext &ctx, SILDeclRef constant,
 TypeConverter::LoweredFormalTypes
 TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
                                      CanAnyFunctionType fnType) {
+  // We always use full bridging when importing a constant because we can
+  // directly bridge its arguments and results when calling it.
+  auto bridging = Bridgeability::Full;
+
   unsigned numParameterLists = constant.getParameterListCount();
   auto extInfo = fnType->getExtInfo();
 
@@ -2909,7 +2916,7 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
   // Fast path: no uncurrying required.
   if (numParameterLists == 1) {
     auto bridgedFnType =
-      getBridgedFunctionType(bridgingFnPattern, fnType, extInfo);
+      getBridgedFunctionType(bridgingFnPattern, fnType, extInfo, bridging);
     bridgingFnPattern.rewriteType(bridgingFnPattern.getGenericSignature(),
                                   bridgedFnType);
     return { bridgingFnPattern, bridgedFnType };
@@ -2927,8 +2934,10 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
   AnyFunctionType::Param selfParam = fnType.getParams()[0];
 
   // The formal method parameters.
+  // If we actually partially-apply this, assume we'll need a thick function.
   fnType = cast<FunctionType>(fnType.getResult());
-  auto innerExtInfo = fnType->getExtInfo();
+  auto innerExtInfo =
+    fnType->getExtInfo().withRepresentation(FunctionTypeRepresentation::Swift);
   auto methodParams = fnType->getParams();
 
   auto resultType = fnType.getResult();
@@ -2958,17 +2967,18 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
       // The "self" parameter should not get bridged unless it's a metatype.
       if (selfParam.getPlainType()->is<AnyMetatypeType>()) {
         auto selfPattern = bridgingFnPattern.getFunctionParamType(0);
-        selfParam = getBridgedParam(rep, selfPattern, selfParam);
+        selfParam = getBridgedParam(rep, selfPattern, selfParam, bridging);
       }
     }
 
     auto partialFnPattern = bridgingFnPattern.getFunctionResultType();
-    getBridgedParams(rep, partialFnPattern, methodParams, bridgedParams);
+    getBridgedParams(rep, partialFnPattern, methodParams, bridgedParams,
+                     bridging);
 
     bridgedResultType =
       getBridgedResultType(rep,
                            partialFnPattern.getFunctionResultType(),
-                           resultType, suppressOptionalResult);
+                           resultType, bridging, suppressOptionalResult);
     break;
   }
 
@@ -2979,7 +2989,7 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
   // Build the curried function type.
   auto inner =
     CanFunctionType::get(llvm::makeArrayRef(bridgedParams),
-                         bridgedResultType);
+                         bridgedResultType, innerExtInfo);
 
   auto curried =
     CanAnyFunctionType::get(genericSig, {selfParam}, inner, extInfo);

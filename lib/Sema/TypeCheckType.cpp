@@ -78,6 +78,10 @@ TypeResolution TypeResolution::forContextual(DeclContext *dc,
   return result;
 }
 
+ASTContext &TypeResolution::getASTContext() const {
+  return dc->getASTContext();
+}
+
 GenericSignatureBuilder *TypeResolution::getGenericSignatureBuilder() const {
   assert(stage == TypeResolutionStage::Interface);
   if (!complete.builder) {
@@ -212,8 +216,9 @@ Type TypeResolution::resolveDependentMemberType(
     return DependentMemberType::get(baseTy, assocType);
   }
 
-  // Otherwise, the nested type comes from a concrete type. Substitute the
-  // base type into it.
+  // Otherwise, the nested type comes from a concrete type,
+  // or it's a typealias declared in protocol or protocol extension.
+  // Substitute the base type into it.
   auto concrete = ref->getBoundDecl();
   auto lazyResolver = ctx.getLazyResolver();
   if (lazyResolver)
@@ -221,14 +226,26 @@ Type TypeResolution::resolveDependentMemberType(
   if (!concrete->hasInterfaceType())
     return ErrorType::get(ctx);
 
-  if (concrete->getDeclContext()->getSelfClassDecl()) {
-    // We found a member of a class from a protocol or protocol
-    // extension.
-    //
-    // Get the superclass of the 'Self' type parameter.
-    baseTy = (baseEquivClass->concreteType
-              ? baseEquivClass->concreteType
-              : baseEquivClass->superclass);
+  // Make sure that base type didn't get replaced along the way.
+  assert(baseTy->isTypeParameter());
+
+  // There are two situations possible here:
+  //
+  // 1. Member comes from the protocol, which means that it has been
+  //    found through a conformance constraint placed on base e.g. `T: P`.
+  //    In this case member is a `typealias` declaration located in
+  //    protocol or protocol extension.
+  //
+  // 2. Member comes from struct/enum/class type, which means that it
+  //    has been found through same-type constraint on base e.g. `T == Q`.
+  //
+  // If this is situation #2 we need to make sure to switch base to
+  // a concrete type (according to equivalence class) otherwise we'd
+  // end up using incorrect generic signature while attempting to form
+  // a substituted type for the member we found.
+  if (!concrete->getDeclContext()->getSelfProtocolDecl()) {
+    baseTy = baseEquivClass->concreteType ? baseEquivClass->concreteType
+                                          : baseEquivClass->superclass;
     assert(baseTy);
   }
 
@@ -476,19 +493,18 @@ Type TypeChecker::resolveTypeInContext(
       genericParam->getDeclaredInterfaceType());
   }
 
-  // If we are referring to a type within its own context, and we have either
-  // a generic type with no generic arguments or a non-generic type, use the
-  // type within the context.
-  if (auto nominalType = dyn_cast<NominalTypeDecl>(typeDecl)) {
-    if (!isa<ProtocolDecl>(nominalType) &&
-        (!nominalType->getGenericParams() || !isSpecialized)) {
-      for (auto parentDC = fromDC;
+  if (!isSpecialized) {
+    // If we are referring to a type within its own context, and we have either
+    // a generic type with no generic arguments or a non-generic type, use the
+    // type within the context.
+    if (auto *nominalType = dyn_cast<NominalTypeDecl>(typeDecl)) {
+      for (auto *parentDC = fromDC;
            !parentDC->isModuleScopeContext();
            parentDC = parentDC->getParent()) {
         auto *parentNominal = parentDC->getSelfNominalTypeDecl();
         if (parentNominal == nominalType)
           return resolution.mapTypeIntoContext(
-            parentDC->getSelfInterfaceType());
+            parentDC->getDeclaredInterfaceType());
         if (isa<ExtensionDecl>(parentDC)) {
           auto *extendedType = parentNominal;
           while (extendedType != nullptr) {
@@ -496,6 +512,27 @@ Type TypeChecker::resolveTypeInContext(
               return resolution.mapTypeIntoContext(
                 extendedType->getDeclaredInterfaceType());
             extendedType = extendedType->getParent()->getSelfNominalTypeDecl();
+          }
+        }
+      }
+    }
+
+    // If we're inside an extension of a type alias, allow the type alias to be
+    // referenced without generic arguments as well.
+    if (auto *aliasDecl = dyn_cast<TypeAliasDecl>(typeDecl)) {
+      for (auto *parentDC = fromDC;
+            !parentDC->isModuleScopeContext();
+            parentDC = parentDC->getParent()) {
+        if (auto *ext = dyn_cast<ExtensionDecl>(parentDC)) {
+          auto extendedType = ext->getExtendedType();
+          if (auto *aliasType = dyn_cast<TypeAliasType>(extendedType.getPointer())) {
+            if (aliasType->getDecl() == aliasDecl) {
+              return resolution.mapTypeIntoContext(
+                  aliasDecl->getDeclaredInterfaceType());
+            }
+
+            extendedType = aliasType->getParent();
+            continue;
           }
         }
       }
@@ -700,7 +737,7 @@ Type TypeChecker::applyGenericArguments(Type type,
 
   // FIXME: More principled handling of circularity.
   if (!genericDecl->hasValidSignature()) {
-    diags.diagnose(loc, diag::recursive_type_reference,
+    diags.diagnose(loc, diag::recursive_decl_reference,
              genericDecl->getDescriptiveKind(), genericDecl->getName());
     genericDecl->diagnose(diag::kind_declared_here, DescriptiveDeclKind::Type);
     return ErrorType::get(ctx);
@@ -832,7 +869,7 @@ Type TypeChecker::applyUnboundGenericArguments(
     auto subMap = SubstitutionMap::get(genericSig,
                                        QueryTypeSubstitutionMap{subs},
                                        LookUpConformance(dc));
-    resultType = NameAliasType::get(typealias, parentType,
+    resultType = TypeAliasType::get(typealias, parentType,
                                     subMap, resultType);
   }
 
@@ -844,7 +881,7 @@ Type TypeChecker::applyUnboundGenericArguments(
   return resultType;
 }
 
-/// \brief Diagnose a use of an unbound generic type.
+/// Diagnose a use of an unbound generic type.
 static void diagnoseUnboundGenericType(Type ty, SourceLoc loc) {
   auto unbound = ty->castTo<UnboundGenericType>();
   {
@@ -900,7 +937,7 @@ static void maybeDiagnoseBadConformanceRef(DeclContext *dc,
   ctx.Diags.diagnose(loc, diagCode, isa<TypeAliasDecl>(typeDecl), typeDecl->getFullName(), parentTy);
 }
 
-/// \brief Returns a valid type or ErrorType in case of an error.
+/// Returns a valid type or ErrorType in case of an error.
 static Type resolveTypeDecl(TypeDecl *typeDecl, SourceLoc loc,
                             DeclContext *foundDC,
                             TypeResolution resolution,
@@ -922,7 +959,7 @@ static Type resolveTypeDecl(TypeDecl *typeDecl, SourceLoc loc,
 
     // If we were not able to validate recursively, bail out.
     if (!typeDecl->hasInterfaceType()) {
-      diags.diagnose(loc, diag::recursive_type_reference,
+      diags.diagnose(loc, diag::recursive_decl_reference,
                   typeDecl->getDescriptiveKind(), typeDecl->getName());
       typeDecl->diagnose(diag::kind_declared_here,
                          DescriptiveDeclKind::Type);
@@ -1515,7 +1552,8 @@ static bool diagnoseAvailability(IdentTypeRepr *IdType,
       TypeChecker &tc = static_cast<TypeChecker &>(*ctx.getLazyResolver());
       if (diagnoseDeclAvailability(typeDecl, tc, DC, comp->getIdLoc(),
                                    AllowPotentiallyUnavailableProtocol,
-                                   /*SignalOnPotentialUnavailability*/false)) {
+                                   /*SignalOnPotentialUnavailability*/false,
+                                   /*ForInout*/false)) {
         return true;
       }
     }
@@ -1541,7 +1579,7 @@ static Type applyNonEscapingFromContext(DeclContext *DC,
     // We lost the sugar to flip the isNoEscape bit.
     //
     // FIXME: It would be better to add a new AttributedType sugared type,
-    // which would wrap the NameAliasType or ParenType, and apply the
+    // which would wrap the TypeAliasType or ParenType, and apply the
     // isNoEscape bit when de-sugaring.
     // <https://bugs.swift.org/browse/SR-2520>
     return FunctionType::get(funcTy->getParams(), funcTy->getResult(), extInfo);
@@ -1551,7 +1589,7 @@ static Type applyNonEscapingFromContext(DeclContext *DC,
   return ty;
 }
 
-/// \brief Returns a valid type or ErrorType in case of an error.
+/// Returns a valid type or ErrorType in case of an error.
 Type TypeChecker::resolveIdentifierType(
        TypeResolution resolution,
        IdentTypeRepr *IdType,
@@ -2195,7 +2233,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
     if (!ty->isExistentialType()) {
       diagnose(attrs.getLoc(TAK_opened), diag::opened_non_protocol, ty);
     } else {
-      ty = ArchetypeType::getOpened(ty, attrs.OpenedID);
+      ty = OpenedArchetypeType::get(ty, attrs.OpenedID);
     }
     attrs.clearAttribute(TAK_opened);
   }
@@ -2948,6 +2986,7 @@ Type TypeResolver::resolveImplicitlyUnwrappedOptionalType(
   case TypeResolverContext::EnumElementDecl:
   case TypeResolverContext::EnumPatternPayload:
   case TypeResolverContext::TypeAliasDecl:
+  case TypeResolverContext::GenericTypeAliasDecl:
   case TypeResolverContext::GenericRequirement:
   case TypeResolverContext::ImmediateOptionalTypeArgument:
   case TypeResolverContext::InExpression:
@@ -3214,21 +3253,19 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
 
   auto *aliasDecl = dyn_cast<TypeAliasDecl>(member);
   if (aliasDecl) {
+    if (aliasDecl->getGenericParams()) {
+      return UnboundGenericType::get(
+          aliasDecl, baseTy,
+          aliasDecl->getASTContext());
+    }
+
     // FIXME: If this is a protocol typealias and we haven't built the
     // protocol's generic environment yet, do so now, to ensure the
     // typealias's underlying type has fully resolved dependent
     // member types.
     if (auto *protoDecl = dyn_cast<ProtocolDecl>(aliasDecl->getDeclContext())) {
-      if (protoDecl->getGenericEnvironment() == nullptr) {
-        ASTContext &ctx = protoDecl->getASTContext();
-        ctx.getLazyResolver()->resolveProtocolEnvironment(protoDecl);
-      }
-    }
-
-    if (aliasDecl->getGenericParams()) {
-      return UnboundGenericType::get(
-          aliasDecl, baseTy,
-          aliasDecl->getASTContext());
+      ASTContext &ctx = protoDecl->getASTContext();
+      ctx.getLazyResolver()->resolveProtocolEnvironment(protoDecl);
     }
   }
 
@@ -3258,7 +3295,7 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
   // If we're referring to a typealias within a generic context, build
   // a sugared alias type.
   if (aliasDecl && (!sugaredBaseTy || !sugaredBaseTy->isAnyExistentialType())) {
-    resultType = NameAliasType::get(aliasDecl, sugaredBaseTy, subs, resultType);
+    resultType = TypeAliasType::get(aliasDecl, sugaredBaseTy, subs, resultType);
   }
 
   return resultType;

@@ -319,6 +319,8 @@ private:
     case Node::Kind::AssociatedTypeMetadataAccessor:
     case Node::Kind::AssociatedTypeWitnessTableAccessor:
     case Node::Kind::AutoClosureType:
+    case Node::Kind::BaseConformanceDescriptor:
+    case Node::Kind::BaseWitnessTableAccessor:
     case Node::Kind::ClassMetadataBaseOffset:
     case Node::Kind::CFunctionPointer:
     case Node::Kind::Constructor:
@@ -495,7 +497,9 @@ private:
     case Node::Kind::DependentProtocolConformanceAssociated:
     case Node::Kind::DependentProtocolConformanceInherited:
     case Node::Kind::DependentProtocolConformanceRoot:
-    case Node::Kind::ProtocolConformanceRef:
+    case Node::Kind::ProtocolConformanceRefInTypeModule:
+    case Node::Kind::ProtocolConformanceRefInProtocolModule:
+    case Node::Kind::ProtocolConformanceRefInOtherModule:
     case Node::Kind::DynamicallyReplaceableFunctionKey:
     case Node::Kind::DynamicallyReplaceableFunctionImpl:
     case Node::Kind::DynamicallyReplaceableFunctionVar:
@@ -1638,6 +1642,12 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
     Printer << " in ";
     print(Node->getChild(0));
     return nullptr;
+  case Node::Kind::BaseConformanceDescriptor:
+    Printer << "base conformance descriptor for ";
+    print(Node->getChild(0));
+    Printer << ": ";
+    print(Node->getChild(1));
+    return nullptr;
   case Node::Kind::DefaultAssociatedTypeMetadataAccessor:
     Printer << "default associated type metadata accessor for ";
     print(Node->getChild(0));
@@ -1647,6 +1657,12 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
     print(Node->getChild(1));
     Printer << " : ";
     print(Node->getChild(2));
+    Printer << " in ";
+    print(Node->getChild(0));
+    return nullptr;
+  case Node::Kind::BaseWitnessTableAccessor:
+    Printer << "base witness table accessor for ";
+    print(Node->getChild(1));
     Printer << " in ";
     print(Node->getChild(0));
     return nullptr;
@@ -2158,7 +2174,16 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
       << " ";
     printChildren(Node);
     return nullptr;
-  case Node::Kind::ProtocolConformanceRef:
+  case Node::Kind::ProtocolConformanceRefInTypeModule:
+    Printer << "protocol conformance ref (type's module) ";
+    printChildren(Node);
+    return nullptr;
+  case Node::Kind::ProtocolConformanceRefInProtocolModule:
+    Printer << "protocol conformance ref (protocol's module) ";
+    printChildren(Node);
+    return nullptr;
+  case Node::Kind::ProtocolConformanceRefInOtherModule:
+    Printer << "protocol conformance ref (retroactive) ";
     printChildren(Node);
     return nullptr;
   }

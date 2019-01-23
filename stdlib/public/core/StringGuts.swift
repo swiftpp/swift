@@ -56,13 +56,12 @@ extension _StringGuts {
   }
 
   @inline(__always)
-  internal init(_ storage: _StringStorage) {
+  internal init(_ storage: __StringStorage) {
     self.init(_StringObject(storage))
   }
 
-  internal init(_ storage: _SharedStringStorage) {
-    // TODO(cleanup): We should probably pass whole perf flags struct around
-    self.init(_StringObject(storage, isASCII: false))
+  internal init(_ storage: __SharedStringStorage) {
+    self.init(_StringObject(storage))
   }
 
   internal init(
@@ -90,6 +89,10 @@ extension _StringGuts {
     @inline(__always) get { return _object.isSmall }
   }
 
+  internal var isSmallASCII: Bool {
+    @inline(__always) get { return _object.isSmall && _object.smallIsASCII }
+  }
+
   @inlinable
   internal var asSmall: _SmallString {
     @inline(__always) get { return _SmallString(_object) }
@@ -105,18 +108,15 @@ extension _StringGuts {
     @inline(__always) get { return isFastUTF8 && _object.isASCII }
   }
 
-  @inlinable
-  internal var isNFC: Bool  {
-    @inline(__always) get { return _object.isNFC }
-  }
+  @inline(__always)
+  internal var isNFC: Bool { return _object.isNFC }
 
-  @inlinable
-  internal var isNFCFastUTF8: Bool  {
+  @inline(__always)
+  internal var isNFCFastUTF8: Bool {
     // TODO(String micro-performance): Consider a dedicated bit for this
-    @inline(__always) get { return _object.isNFC && isFastUTF8 }
+    return _object.isNFC && isFastUTF8
   }
 
-  @inlinable
   internal var hasNativeStorage: Bool { return _object.hasNativeStorage }
 
   internal var hasSharedStorage: Bool { return _object.hasSharedStorage }
@@ -153,18 +153,11 @@ extension _StringGuts {
 
   @inlinable @inline(__always)
   internal func withFastUTF8<R>(
-    range: Range<Int>?,
+    range: Range<Int>,
     _ f: (UnsafeBufferPointer<UInt8>) throws -> R
   ) rethrows -> R {
     return try self.withFastUTF8 { wholeUTF8 in
-      let slicedUTF8: UnsafeBufferPointer<UInt8>
-      if let r = range {
-        slicedUTF8 = UnsafeBufferPointer(rebasing: wholeUTF8[r])
-      } else {
-        slicedUTF8 = wholeUTF8
-      }
-
-      return try f(slicedUTF8)
+      return try f(UnsafeBufferPointer(rebasing: wholeUTF8[range]))
     }
   }
 

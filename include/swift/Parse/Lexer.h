@@ -22,8 +22,7 @@
 #include "swift/Basic/SourceManager.h"
 #include "swift/Parse/LexerState.h"
 #include "swift/Parse/Token.h"
-#include "swift/Syntax/References.h"
-#include "swift/Syntax/Trivia.h"
+#include "swift/Parse/ParsedTrivia.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/SaveAndRestore.h"
 
@@ -99,7 +98,7 @@ class Lexer {
 
   Token NextToken;
   
-  /// \brief This is true if we're lexing a .sil file instead of a .swift
+  /// This is true if we're lexing a .sil file instead of a .swift
   /// file.  This enables the 'sil' keyword.
   const bool InSILMode;
 
@@ -118,13 +117,13 @@ class Lexer {
   ///
   /// This is only preserved if this Lexer was constructed with
   /// `TriviaRetentionMode::WithTrivia`.
-  syntax::Trivia LeadingTrivia;
+  ParsedTrivia LeadingTrivia;
 
   /// The current trailing trivia for the next token.
   ///
   /// This is only preserved if this Lexer was constructed with
   /// `TriviaRetentionMode::WithTrivia`.
-  syntax::Trivia TrailingTrivia;
+  ParsedTrivia TrailingTrivia;
   
   Lexer(const Lexer&) = delete;
   void operator=(const Lexer&) = delete;
@@ -143,7 +142,7 @@ class Lexer {
   void initialize(unsigned Offset, unsigned EndOffset);
 
 public:
-  /// \brief Create a normal lexer that scans the whole source buffer.
+  /// Create a normal lexer that scans the whole source buffer.
   ///
   /// \param Options - the language options under which to lex.  By
   ///   design, language options only affect whether a token is valid
@@ -163,14 +162,14 @@ public:
       CommentRetentionMode RetainComments = CommentRetentionMode::None,
       TriviaRetentionMode TriviaRetention = TriviaRetentionMode::WithoutTrivia);
 
-  /// \brief Create a lexer that scans a subrange of the source buffer.
+  /// Create a lexer that scans a subrange of the source buffer.
   Lexer(const LangOptions &Options, const SourceManager &SourceMgr,
         unsigned BufferID, DiagnosticEngine *Diags, bool InSILMode,
         HashbangMode HashbangAllowed, CommentRetentionMode RetainComments,
         TriviaRetentionMode TriviaRetention, unsigned Offset,
         unsigned EndOffset);
 
-  /// \brief Create a sub-lexer that lexes from the same buffer, but scans
+  /// Create a sub-lexer that lexes from the same buffer, but scans
   /// a subrange of the buffer.
   ///
   /// \param Parent the parent lexer that scans the whole buffer
@@ -178,15 +177,15 @@ public:
   /// \param EndState end of the subrange
   Lexer(Lexer &Parent, State BeginState, State EndState);
 
-  /// \brief Returns true if this lexer will produce a code completion token.
+  /// Returns true if this lexer will produce a code completion token.
   bool isCodeCompletion() const {
     return CodeCompletionPtr != nullptr;
   }
 
   /// Lex a token. If \c TriviaRetentionMode is \c WithTrivia, passed pointers
   /// to trivias are populated.
-  void lex(Token &Result, syntax::Trivia &LeadingTriviaResult,
-           syntax::Trivia &TrailingTriviaResult) {
+  void lex(Token &Result, ParsedTrivia &LeadingTriviaResult,
+           ParsedTrivia &TrailingTriviaResult) {
     Result = NextToken;
     if (TriviaRetention == TriviaRetentionMode::WithTrivia) {
       LeadingTriviaResult = {LeadingTrivia};
@@ -197,7 +196,7 @@ public:
   }
 
   void lex(Token &Result) {
-    syntax::Trivia LeadingTrivia, TrailingTrivia;
+    ParsedTrivia LeadingTrivia, TrailingTrivia;
     lex(Result, LeadingTrivia, TrailingTrivia);
   }
 
@@ -220,16 +219,16 @@ public:
   /// actually lexing it.
   const Token &peekNextToken() const { return NextToken; }
 
-  /// \brief Returns the lexer state for the beginning of the given token
+  /// Returns the lexer state for the beginning of the given token
   /// location. After restoring the state, lexer will return this token and
   /// continue from there.
   State getStateForBeginningOfTokenLoc(SourceLoc Loc) const;
 
-  /// \brief Returns the lexer state for the beginning of the given token.
+  /// Returns the lexer state for the beginning of the given token.
   /// After restoring the state, lexer will return this token and continue from
   /// there.
   State getStateForBeginningOfToken(const Token &Tok,
-                                    const syntax::Trivia &LeadingTrivia = {}) const {
+                                    const ParsedTrivia &LeadingTrivia = {}) const {
 
     // If the token has a comment attached to it, rewind to before the comment,
     // not just the start of the token.  This ensures that we will re-lex and
@@ -251,7 +250,7 @@ public:
     return SourceMgr.findBufferContainingLoc(State.Loc) == getBufferID();
   }
 
-  /// \brief Restore the lexer state to a given one, that can be located either
+  /// Restore the lexer state to a given one, that can be located either
   /// before or after the current position.
   void restoreState(State S, bool enableDiagnostics = false) {
     assert(S.isValid());
@@ -268,7 +267,7 @@ public:
         LeadingTrivia = std::move(*LTrivia);
   }
 
-  /// \brief Restore the lexer state to a given state that is located before
+  /// Restore the lexer state to a given state that is located before
   /// current position.
   void backtrackToState(State S) {
     assert(getBufferPtrForSourceLoc(S.Loc) <= CurPtr &&
@@ -276,7 +275,7 @@ public:
     restoreState(S);
   }
 
-  /// \brief Retrieve the Token referred to by \c Loc.
+  /// Retrieve the Token referred to by \c Loc.
   ///
   /// \param SM The source manager in which the given source location
   /// resides.
@@ -285,7 +284,7 @@ public:
   static Token getTokenAtLocation(const SourceManager &SM, SourceLoc Loc);
 
 
-  /// \brief Retrieve the source location that points just past the
+  /// Retrieve the source location that points just past the
   /// end of the token referred to by \c Loc.
   ///
   /// \param SM The source manager in which the given source location
@@ -294,7 +293,7 @@ public:
   /// \param Loc The source location of the beginning of a token.
   static SourceLoc getLocForEndOfToken(const SourceManager &SM, SourceLoc Loc);
 
-  /// \brief Convert a SourceRange to the equivalent CharSourceRange
+  /// Convert a SourceRange to the equivalent CharSourceRange
   ///
   /// \param SM The source manager in which the given source range
   /// resides.
@@ -342,16 +341,16 @@ public:
   static StringRef getIndentationForLine(SourceManager &SM, SourceLoc Loc,
                                          StringRef *ExtraIndentation = nullptr);
 
-  /// \brief Determines if the given string is a valid non-operator
+  /// Determines if the given string is a valid non-operator
   /// identifier, without escaping characters.
   static bool isIdentifier(StringRef identifier);
 
-  /// \brief Determine the token kind of the string, given that it is a valid
+  /// Determine the token kind of the string, given that it is a valid
   /// non-operator identifier. Return tok::identifier if the string is not a
   /// reserved word.
   static tok kindOfIdentifier(StringRef Str, bool InSILMode);
 
-  /// \brief Determines if the given string is a valid operator identifier,
+  /// Determines if the given string is a valid operator identifier,
   /// without escaping characters.
   static bool isOperator(StringRef string);
 
@@ -409,7 +408,7 @@ public:
                                                unsigned IndentToStrip,
                                                unsigned CustomDelimiterLen);
 
-  /// \brief Compute the bytes that the actual string literal should codegen to.
+  /// Compute the bytes that the actual string literal should codegen to.
   /// If a copy needs to be made, it will be allocated out of the provided
   /// \p Buffer.
   StringRef getEncodedStringSegment(StringSegment Segment,
@@ -420,7 +419,7 @@ public:
         Segment.IndentToStrip, Segment.CustomDelimiterLen);
   }
 
-  /// \brief Given a string encoded with escapes like a string literal, compute
+  /// Given a string encoded with escapes like a string literal, compute
   /// the byte content.
   ///
   /// If a copy needs to be made, it will be allocated out of the provided
@@ -445,7 +444,7 @@ public:
     return Result;
   }
 
-  /// \brief Given a string literal token, separate it into string/expr segments
+  /// Given a string literal token, separate it into string/expr segments
   /// of a potentially interpolated string.
   static void getStringLiteralSegments(
       const Token &Str,
@@ -529,7 +528,7 @@ private:
   void lexOperatorIdentifier();
   void lexHexNumber();
   void lexNumber();
-  void lexTrivia(syntax::Trivia &T, bool IsForTrailingTrivia);
+  void lexTrivia(ParsedTrivia &T, bool IsForTrailingTrivia);
   static unsigned lexUnicodeEscape(const char *&CurPtr, Lexer *Diags);
 
   unsigned lexCharacter(const char *&CurPtr, char StopQuote,

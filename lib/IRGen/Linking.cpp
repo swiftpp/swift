@@ -37,10 +37,28 @@ const IRLinkage IRLinkage::InternalLinkOnceODR = {
   llvm::GlobalValue::DefaultStorageClass,
 };
 
+const IRLinkage IRLinkage::InternalWeakODR = {
+  llvm::GlobalValue::WeakODRLinkage,
+  llvm::GlobalValue::HiddenVisibility,
+  llvm::GlobalValue::DefaultStorageClass,
+};
+
 const IRLinkage IRLinkage::Internal = {
   llvm::GlobalValue::InternalLinkage,
   llvm::GlobalValue::DefaultVisibility,
   llvm::GlobalValue::DefaultStorageClass,
+};
+
+const IRLinkage IRLinkage::ExternalImport = {
+  llvm::GlobalValue::ExternalLinkage,
+  llvm::GlobalValue::DefaultVisibility,
+  llvm::GlobalValue::DLLImportStorageClass,
+};
+
+const IRLinkage IRLinkage::ExternalExport = {
+  llvm::GlobalValue::ExternalLinkage,
+  llvm::GlobalValue::DefaultVisibility,
+  llvm::GlobalValue::DLLExportStorageClass,
 };
 
 bool swift::irgen::useDllStorage(const llvm::Triple &triple) {
@@ -202,6 +220,13 @@ std::string LinkEntity::mangleAsString() const {
              assocConformance.second);
   }
 
+  case Kind::BaseConformanceDescriptor: {
+    auto assocConformance = getAssociatedConformance();
+    return mangler.mangleBaseConformanceDescriptor(
+             cast<ProtocolDecl>(getDecl()),
+             assocConformance.second);
+  }
+
   case Kind::DefaultAssociatedConformanceAccessor: {
     auto assocConformance = getAssociatedConformance();
     return mangler.mangleDefaultAssociatedConformanceAccessor(
@@ -240,6 +265,11 @@ std::string LinkEntity::mangleAsString() const {
 
   case Kind::AssociatedTypeWitnessTableAccessFunction: {
     auto assocConf = getAssociatedConformance();
+    if (isa<GenericTypeParamType>(assocConf.first)) {
+      return mangler.mangleBaseWitnessTableAccessFunction(
+                  getProtocolConformance(), assocConf.second);
+    }
+    
     return mangler.mangleAssociatedTypeWitnessTableAccessFunction(
                 getProtocolConformance(), assocConf.first, assocConf.second);
   }
@@ -253,7 +283,7 @@ std::string LinkEntity::mangleAsString() const {
   case Kind::ObjCClassRef: {
     llvm::SmallString<64> tempBuffer;
     StringRef name = cast<ClassDecl>(getDecl())->getObjCRuntimeName(tempBuffer);
-    std::string Result("\01l_OBJC_CLASS_REF_$_");
+    std::string Result("OBJC_CLASS_REF_$_");
     Result.append(name.data(), name.size());
     return Result;
   }
@@ -484,7 +514,7 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
 
     auto linkage = getDeclLinkage(varDecl);
 
-    // Resilient classes don't expose field offset symbols.
+    // Classes with resilient storage don't expose field offset symbols.
     if (cast<ClassDecl>(varDecl->getDeclContext())->isResilient()) {
       assert(linkage != FormalLinkage::PublicNonUnique &&
             "Cannot have a resilient class with non-unique linkage");
@@ -505,6 +535,7 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
   }
 
   case Kind::AssociatedConformanceDescriptor:
+  case Kind::BaseConformanceDescriptor:
   case Kind::ObjCClass:
   case Kind::ObjCMetaclass:
   case Kind::SwiftMetaclassStub:
@@ -656,6 +687,7 @@ bool LinkEntity::isAvailableExternally(IRGenModule &IGM) const {
     return true;
 
   case Kind::AssociatedConformanceDescriptor:
+  case Kind::BaseConformanceDescriptor:
   case Kind::SwiftMetaclassStub:
   case Kind::ClassMetadataBaseOffset:
   case Kind::PropertyDescriptor:
@@ -737,6 +769,7 @@ llvm::Type *LinkEntity::getDefaultDeclarationType(IRGenModule &IGM) const {
     return IGM.ProtocolDescriptorStructTy;
   case Kind::AssociatedTypeDescriptor:
   case Kind::AssociatedConformanceDescriptor:
+  case Kind::BaseConformanceDescriptor:
   case Kind::ProtocolRequirementsBaseDescriptor:
     return IGM.ProtocolRequirementStructTy;
   case Kind::ProtocolConformanceDescriptor:
@@ -784,7 +817,7 @@ llvm::Type *LinkEntity::getDefaultDeclarationType(IRGenModule &IGM) const {
   case Kind::ReflectionFieldDescriptor:
   case Kind::ReflectionAssociatedTypeDescriptor:
     return IGM.FieldDescriptorTy;
-  case Kind::ValueWitnessTable:
+  case Kind::ValueWitnessTable: // TODO: use ValueWitnessTableTy
   case Kind::ProtocolWitnessTable:
   case Kind::ProtocolWitnessTablePattern:
     return IGM.WitnessTableTy;
@@ -818,6 +851,7 @@ Alignment LinkEntity::getAlignment(IRGenModule &IGM) const {
   case Kind::ProtocolDescriptor:
   case Kind::AssociatedTypeDescriptor:
   case Kind::AssociatedConformanceDescriptor:
+  case Kind::BaseConformanceDescriptor:
   case Kind::ProtocolConformanceDescriptor:
   case Kind::ProtocolRequirementsBaseDescriptor:
   case Kind::ReflectionBuiltinDescriptor:
@@ -884,6 +918,9 @@ bool LinkEntity::isWeakImported(ModuleDecl *module) const {
     return depMemTy->getAssocType()->isWeakImported(module);
   }
 
+  case Kind::BaseConformanceDescriptor:
+    return cast<ProtocolDecl>(getDecl())->isWeakImported(module);
+
   case Kind::TypeMetadata:
   case Kind::TypeMetadataAccessFunction: {
     if (auto *nominalDecl = getType()->getAnyNominal())
@@ -917,6 +954,11 @@ bool LinkEntity::isWeakImported(ModuleDecl *module) const {
   case Kind::DynamicallyReplaceableFunctionImpl:
     return getDecl()->isWeakImported(module);
 
+  case Kind::ProtocolWitnessTable:
+  case Kind::ProtocolConformanceDescriptor:
+    return getProtocolConformance()->getRootConformance()
+                                   ->isWeakImported(module);
+
   // TODO: Revisit some of the below, for weak conformances.
   case Kind::TypeMetadataPattern:
   case Kind::TypeMetadataInstantiationCache:
@@ -925,12 +967,10 @@ bool LinkEntity::isWeakImported(ModuleDecl *module) const {
   case Kind::TypeMetadataCompletionFunction:
   case Kind::ExtensionDescriptor:
   case Kind::AnonymousDescriptor:
-  case Kind::ProtocolWitnessTable:
   case Kind::ProtocolWitnessTablePattern:
   case Kind::GenericProtocolWitnessTableInstantiationFunction:
   case Kind::AssociatedTypeWitnessTableAccessFunction:
   case Kind::ReflectionAssociatedTypeDescriptor:
-  case Kind::ProtocolConformanceDescriptor:
   case Kind::ProtocolWitnessTableLazyAccessFunction:
   case Kind::ProtocolWitnessTableLazyCacheVariable:
   case Kind::ValueWitness:
@@ -987,6 +1027,7 @@ const SourceFile *LinkEntity::getSourceFileForEmission() const {
   case Kind::AssociatedTypeDescriptor:
   case Kind::AssociatedConformanceDescriptor:
   case Kind::DefaultAssociatedConformanceAccessor:
+  case Kind::BaseConformanceDescriptor:
   case Kind::DynamicallyReplaceableFunctionVariableAST:
   case Kind::DynamicallyReplaceableFunctionKeyAST:
   case Kind::DynamicallyReplaceableFunctionImpl:

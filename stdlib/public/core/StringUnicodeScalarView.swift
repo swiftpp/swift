@@ -180,11 +180,12 @@ extension String.UnicodeScalarView {
 
     @inlinable
     internal init(_ guts: _StringGuts) {
-      self._guts = guts
       self._end = guts.count
+      self._guts = guts
     }
 
     @inlinable
+    @inline(__always)
     public mutating func next() -> Unicode.Scalar? {
       guard _fastPath(_position < _end) else { return nil }
 

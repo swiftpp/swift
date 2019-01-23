@@ -353,7 +353,7 @@ bool SILValueOwnershipChecker::gatherUsers(
     // User's results to the worklist.
     if (user->getResults().size()) {
       for (SILValue result : user->getResults()) {
-        if (result.getOwnershipKind() == ValueOwnershipKind::Trivial) {
+        if (result.getOwnershipKind() == ValueOwnershipKind::Any) {
           continue;
         }
 
@@ -399,13 +399,13 @@ bool SILValueOwnershipChecker::gatherUsers(
         // needing to be verified. If it isn't verified appropriately, assert
         // when the verifier is destroyed.
         auto succArgOwnershipKind = succArg->getOwnershipKind();
-        if (!succArgOwnershipKind.isTrivialOrCompatibleWith(ownershipKind)) {
+        if (!succArgOwnershipKind.isCompatibleWith(ownershipKind)) {
           // This is where the error would go.
           continue;
         }
 
-        // If we have a trivial value, just continue.
-        if (succArgOwnershipKind == ValueOwnershipKind::Trivial)
+        // If we have an any value, just continue.
+        if (succArgOwnershipKind == ValueOwnershipKind::Any)
           continue;
 
         // Otherwise add all end_borrow users for this BBArg to the
@@ -434,11 +434,8 @@ bool SILValueOwnershipChecker::checkFunctionArgWithoutLifetimeEndingUses(
   switch (arg->getOwnershipKind()) {
   case ValueOwnershipKind::Guaranteed:
   case ValueOwnershipKind::Unowned:
-  case ValueOwnershipKind::Trivial:
-    return true;
   case ValueOwnershipKind::Any:
-    llvm_unreachable(
-        "Function arguments should never have ValueOwnershipKind::Any");
+    return true;
   case ValueOwnershipKind::Owned:
     break;
   }
@@ -458,10 +455,8 @@ bool SILValueOwnershipChecker::checkYieldWithoutLifetimeEndingUses(
   switch (yield->getOwnershipKind()) {
   case ValueOwnershipKind::Guaranteed:
   case ValueOwnershipKind::Unowned:
-  case ValueOwnershipKind::Trivial:
-    return true;
   case ValueOwnershipKind::Any:
-    llvm_unreachable("Yields should never have ValueOwnershipKind::Any");
+    return true;
   case ValueOwnershipKind::Owned:
     break;
   }
@@ -642,7 +637,7 @@ void SILInstruction::verifyOperandOwnership() const {
 
   // If the given function has unqualified ownership or we have been asked by
   // the user not to verify this function, there is nothing to verify.
-  if (!getFunction()->hasQualifiedOwnership() ||
+  if (!getFunction()->hasOwnership() ||
       !getFunction()->shouldVerifyOwnership())
     return;
 
@@ -669,9 +664,6 @@ void SILInstruction::verifyOperandOwnership() const {
       continue;
     SILValue opValue = op.get();
 
-    // Skip any SILUndef that we see.
-    if (isa<SILUndef>(opValue))
-      continue;
     auto operandOwnershipKindMap = op.getOwnershipKindMap();
     auto valueOwnershipKind = opValue.getOwnershipKind();
     if (operandOwnershipKindMap.canAcceptKind(valueOwnershipKind))
@@ -702,11 +694,6 @@ void SILValue::verifyOwnership(SILModule &mod,
   if (DisableOwnershipVerification)
     return;
 
-  // If we are SILUndef, just bail. SILUndef can pair with anything. Any uses of
-  // the SILUndef will make sure that the matching checks out.
-  if (isa<SILUndef>(*this))
-    return;
-
   // Since we do not have SILUndef, we now know that getFunction() should return
   // a real function. Assert in case this assumption is no longer true.
   SILFunction *f = (*this)->getFunction();
@@ -714,7 +701,7 @@ void SILValue::verifyOwnership(SILModule &mod,
 
   // If the given function has unqualified ownership or we have been asked by
   // the user not to verify this function, there is nothing to verify.
-  if (!f->hasQualifiedOwnership() || !f->shouldVerifyOwnership())
+  if (!f->hasOwnership() || !f->shouldVerifyOwnership())
     return;
 
   ErrorBehaviorKind errorBehavior;
@@ -743,11 +730,6 @@ bool OwnershipChecker::checkValue(SILValue value) {
   lifetimeEndingUsers.clear();
   liveBlocks.clear();
 
-  // If we are SILUndef, just bail. SILUndef can pair with anything. Any uses of
-  // the SILUndef will make sure that the matching checks out.
-  if (isa<SILUndef>(value))
-    return false;
-
   // Since we do not have SILUndef, we now know that getFunction() should return
   // a real function. Assert in case this assumption is no longer true.
   SILFunction *f = value->getFunction();
@@ -755,7 +737,7 @@ bool OwnershipChecker::checkValue(SILValue value) {
 
   // If the given function has unqualified ownership, there is nothing further
   // to verify.
-  if (!f->hasQualifiedOwnership())
+  if (!f->hasOwnership())
     return false;
 
   ErrorBehaviorKind errorBehavior(ErrorBehaviorKind::ReturnFalse);

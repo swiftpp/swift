@@ -201,23 +201,6 @@ void ConstraintSystem::assignFixedType(TypeVariableType *typeVar, Type type,
   addTypeVariableConstraintsToWorkList(typeVar);
 }
 
-void ConstraintSystem::setMustBeMaterializableRecursive(Type type)
-{
-  assert(type->isMaterializable() &&
-         "argument to setMustBeMaterializableRecursive may not be inherently "
-         "non-materializable");
-  type = getFixedTypeRecursive(type, /*wantRValue=*/false);
-  type = type->lookThroughAllOptionalTypes();
-
-  if (auto typeVar = type->getAs<TypeVariableType>()) {
-    typeVar->getImpl().setMustBeMaterializable(getSavedBindings());
-  } else if (auto *tupleTy = type->getAs<TupleType>()) {
-    for (auto elt : tupleTy->getElementTypes()) {
-      setMustBeMaterializableRecursive(elt);
-    }
-  }
-}
-
 void ConstraintSystem::addTypeVariableConstraintsToWorkList(
        TypeVariableType *typeVar) {
   // Gather the constraints affected by a change to this type variable.
@@ -227,11 +210,8 @@ void ConstraintSystem::addTypeVariableConstraintsToWorkList(
       [](Constraint *constraint) { return !constraint->isActive(); });
 
   // Add any constraints that aren't already active to the worklist.
-  for (auto constraint : inactiveConstraints) {
-    ActiveConstraints.splice(ActiveConstraints.end(), InactiveConstraints,
-                             constraint);
-    constraint->setActive(true);
-  }
+  for (auto *constraint : inactiveConstraints)
+    activateConstraint(constraint);
 }
 
 /// Retrieve a dynamic result signature for the given declaration.
@@ -466,7 +446,7 @@ Type ConstraintSystem::openUnboundGenericType(UnboundGenericType *unbound,
         cast<GenericTypeParamType>(pair.first));
       assert(found != replacements.end() &&
              "Missing generic parameter?");
-      addConstraint(ConstraintKind::Equal, found->second, pair.second,
+      addConstraint(ConstraintKind::Bind, found->second, pair.second,
                     locator);
     }
   }
@@ -499,7 +479,7 @@ static void checkNestedTypeConstraints(ConstraintSystem &cs, Type type,
   Type parentTy;
   SubstitutionMap subMap;
 
-  if (auto *NAT = dyn_cast<NameAliasType>(type.getPointer())) {
+  if (auto *NAT = dyn_cast<TypeAliasType>(type.getPointer())) {
     decl = NAT->getDecl();
     parentTy = NAT->getParent();
     subMap = NAT->getSubstitutionMap();
@@ -590,7 +570,11 @@ Type ConstraintSystem::openType(Type type, OpenedTypeMap &replacements) {
       if (auto genericParam = type->getAs<GenericTypeParamType>()) {
         auto known = replacements.find(
           cast<GenericTypeParamType>(genericParam->getCanonicalType()));
-        assert(known != replacements.end());
+        // FIXME: This should be an assert, however protocol generic signatures
+        // drop outer generic parameters.
+        // assert(known != replacements.end());
+        if (known == replacements.end())
+          return ErrorType::get(TC.Context);
         return known->second;
       }
 
@@ -735,8 +719,7 @@ static bool doesStorageProduceLValue(TypeChecker &TC,
   if (!storage->isSettable(useDC, base))
     return false;
   
-  if (TC.Context.LangOpts.EnableAccessControl &&
-      !storage->isSetterAccessibleFrom(useDC))
+  if (!storage->isSetterAccessibleFrom(useDC))
     return false;
 
   // If there is no base, or if the base isn't being used, it is settable.
@@ -1024,7 +1007,7 @@ static void bindArchetypesFromContext(
     ConstraintLocator *locatorPtr,
     const OpenedTypeMap &replacements) {
 
-  auto bindContextArchetype = [&](Type paramTy, Type contextTy) {
+  auto bindPrimaryArchetype = [&](Type paramTy, Type contextTy) {
     auto found = replacements.find(cast<GenericTypeParamType>(
                                      paramTy->getCanonicalType()));
 
@@ -1048,7 +1031,7 @@ static void bindArchetypesFromContext(
       if (parentDC != outerDC && parentDC->getSelfProtocolDecl()) {
         auto selfTy = parentDC->getSelfInterfaceType();
         auto contextTy = cs.TC.Context.TheUnresolvedType;
-        bindContextArchetype(selfTy, contextTy);
+        bindPrimaryArchetype(selfTy, contextTy);
       }
       continue;
     }
@@ -1060,7 +1043,7 @@ static void bindArchetypesFromContext(
 
     for (auto *paramTy : genericSig->getGenericParams()) {
       Type contextTy = cs.DC->mapTypeIntoContext(paramTy);
-      bindContextArchetype(paramTy, contextTy);
+      bindPrimaryArchetype(paramTy, contextTy);
     }
 
     break;
@@ -1169,7 +1152,7 @@ static void addSelfConstraint(ConstraintSystem &cs, Type objectTy, Type selfTy,
   }
 
   // Otherwise, the types must be equivalent.
-  cs.addConstraint(ConstraintKind::Equal, objectTy, selfTy,
+  cs.addConstraint(ConstraintKind::Bind, objectTy, selfTy,
                    cs.getConstraintLocator(locator));
 }
 
@@ -1193,6 +1176,7 @@ ConstraintSystem::getTypeOfMemberReference(
     OpenedTypeMap *replacementsPtr) {
   // Figure out the instance type used for the base.
   Type baseObjTy = getFixedTypeRecursive(baseTy, /*wantRValue=*/true);
+
   bool isInstance = true;
   if (auto baseMeta = baseObjTy->getAs<AnyMetatypeType>()) {
     baseObjTy = baseMeta->getInstanceType();
@@ -1325,7 +1309,7 @@ ConstraintSystem::getTypeOfMemberReference(
   Type baseOpenedTy = baseObjTy;
 
   if (baseObjTy->isExistentialType()) {
-    ArchetypeType *openedArchetype = ArchetypeType::getOpened(baseObjTy);
+    auto openedArchetype = OpenedArchetypeType::get(baseObjTy);
     OpenedExistentialTypes.push_back({ getConstraintLocator(locator),
                                        openedArchetype });
     baseOpenedTy = openedArchetype;
@@ -1341,7 +1325,7 @@ ConstraintSystem::getTypeOfMemberReference(
     // For a protocol, substitute the base object directly. We don't need a
     // conformance constraint because we wouldn't have found the declaration
     // if it didn't conform.
-    addConstraint(ConstraintKind::Equal, baseOpenedTy, selfObjTy,
+    addConstraint(ConstraintKind::Bind, baseOpenedTy, selfObjTy,
                   getConstraintLocator(locator));
   } else if (!isDynamicResult) {
     addSelfConstraint(*this, baseOpenedTy, selfObjTy, locator);
@@ -1446,6 +1430,40 @@ static void tryOptimizeGenericDisjunction(ConstraintSystem &cs,
   }
 }
 
+/// If there are any SIMD operators in the overload set, partition the set so
+/// that the SIMD operators come at the end.
+static ArrayRef<OverloadChoice> partitionSIMDOperators(
+                                  ArrayRef<OverloadChoice> choices,
+                                  SmallVectorImpl<OverloadChoice> &scratch) {
+  // If the first element isn't an operator, none of them are.
+  if (!choices[0].isDecl() ||
+      !isa<FuncDecl>(choices[0].getDecl()) ||
+      !cast<FuncDecl>(choices[0].getDecl())->isOperator() ||
+      choices[0].getDecl()->getASTContext().LangOpts
+        .SolverEnableOperatorDesignatedTypes)
+    return choices;
+
+  // Check whether we have any SIMD operators.
+  bool foundSIMDOperator = false;
+  for (const auto &choice : choices) {
+    if (isSIMDOperator(choice.getDecl())) {
+      foundSIMDOperator = true;
+      break;
+    }
+  }
+
+  if (!foundSIMDOperator)
+    return choices;
+
+  scratch.assign(choices.begin(), choices.end());
+  std::stable_partition(scratch.begin(), scratch.end(),
+                        [](const OverloadChoice &choice) {
+                          return !isSIMDOperator(choice.getDecl());
+                        });
+
+  return scratch;
+}
+
 void ConstraintSystem::addOverloadSet(Type boundType,
                                       ArrayRef<OverloadChoice> choices,
                                       DeclContext *useDC,
@@ -1461,6 +1479,9 @@ void ConstraintSystem::addOverloadSet(Type boundType,
   }
 
   tryOptimizeGenericDisjunction(*this, choices, favoredChoice);
+
+  SmallVector<OverloadChoice, 4> scratchChoices;
+  choices = partitionSIMDOperators(choices, scratchChoices);
 
   SmallVector<Constraint *, 4> overloads;
   
@@ -1837,7 +1858,7 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
     auto elementObjTy = createTypeVariable(
         getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     addConstraint(ConstraintKind::Equal, elementTy, elementObjTy, locator);
-    
+
     // The element result is an lvalue or rvalue based on the key path class.
     addKeyPathApplicationConstraint(
                   keyPathIndexTy, choice.getBaseType(), elementTy, locator);
@@ -2182,8 +2203,16 @@ bool ConstraintSystem::diagnoseAmbiguityWithFixes(
   {
     DiagnosticTransaction transaction(TC.Diags);
 
-    TC.diagnose(commonAnchor->getLoc(), diag::ambiguous_reference_to_decl,
-                decl->getDescriptiveKind(), decl->getFullName());
+    const auto *fix = viableSolutions.front().second;
+    if (fix->getKind() == FixKind::UseSubscriptOperator) {
+      auto *UDE = cast<UnresolvedDotExpr>(commonAnchor);
+      TC.diagnose(commonAnchor->getLoc(),
+                  diag::could_not_find_subscript_member_did_you_mean,
+                  getType(UDE->getBase()));
+    } else {
+      TC.diagnose(commonAnchor->getLoc(), diag::ambiguous_reference_to_decl,
+                  decl->getDescriptiveKind(), decl->getFullName());
+    }
 
     for (const auto &viable : viableSolutions) {
       // Create scope so each applied solution is rolled back.
@@ -2201,7 +2230,7 @@ bool ConstraintSystem::diagnoseAmbiguityWithFixes(
   return diagnosed;
 }
 
-/// \brief Determine the number of distinct overload choices in the
+/// Determine the number of distinct overload choices in the
 /// provided set.
 static unsigned countDistinctOverloads(ArrayRef<OverloadChoice> choices) {
   llvm::SmallPtrSet<void *, 4> uniqueChoices;
@@ -2213,7 +2242,7 @@ static unsigned countDistinctOverloads(ArrayRef<OverloadChoice> choices) {
   return result;
 }
 
-/// \brief Determine the name of the overload in a set of overload choices.
+/// Determine the name of the overload in a set of overload choices.
 static DeclName getOverloadChoiceName(ArrayRef<OverloadChoice> choices) {
   DeclName name;
   for (auto choice : choices) {

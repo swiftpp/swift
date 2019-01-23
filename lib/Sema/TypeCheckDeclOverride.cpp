@@ -759,55 +759,15 @@ SmallVector<OverrideMatch, 2> OverrideMatcher::match(
   return matches;
 }
 
-bool OverrideMatcher::checkOverride(ValueDecl *baseDecl,
-                                    OverrideCheckingAttempt attempt) {
+static void checkOverrideAccessControl(ValueDecl *baseDecl, ValueDecl *decl,
+                                       ASTContext &ctx) {
+  if (ctx.isAccessControlDisabled())
+    return;
+
   auto &diags = ctx.Diags;
-  auto baseTy = getMemberTypeForComparison(ctx, baseDecl, decl);
-  bool emittedMatchError = false;
 
-  // If the name of our match differs from the name we were looking for,
-  // complain.
-  if (decl->getFullName() != baseDecl->getFullName()) {
-    auto diag = diags.diagnose(decl, diag::override_argument_name_mismatch,
-                               isa<ConstructorDecl>(decl),
-                               decl->getFullName(),
-                               baseDecl->getFullName());
-    fixDeclarationName(diag, decl, baseDecl->getFullName());
-    emittedMatchError = true;
-  }
-
-  // If we have an explicit ownership modifier and our parent doesn't,
-  // complain.
-  auto parentAttr =
-      baseDecl->getAttrs().getAttribute<ReferenceOwnershipAttr>();
-  if (auto ownershipAttr =
-          decl->getAttrs().getAttribute<ReferenceOwnershipAttr>()) {
-    ReferenceOwnership parentOwnership;
-    if (parentAttr)
-      parentOwnership = parentAttr->get();
-    else
-      parentOwnership = ReferenceOwnership::Strong;
-    if (parentOwnership != ownershipAttr->get()) {
-      diags.diagnose(decl, diag::override_ownership_mismatch,
-                     parentOwnership, ownershipAttr->get());
-      diags.diagnose(baseDecl, diag::overridden_here);
-    }
-  }
-
-  // If a super method returns Self, and the subclass overrides it to
-  // instead return the subclass type, complain.
-  // This case gets this far because the type matching above specifically
-  // strips out dynamic self via replaceCovariantResultType(), and that
-  // is helpful in several cases - just not this one.
   auto dc = decl->getDeclContext();
   auto classDecl = dc->getSelfClassDecl();
-  if (decl->getASTContext().isSwiftVersionAtLeast(5) &&
-      baseDecl->getInterfaceType()->hasDynamicSelfType() &&
-      !decl->getInterfaceType()->hasDynamicSelfType() &&
-      !classDecl->isFinal()) {
-    diags.diagnose(decl, diag::override_dynamic_self_mismatch);
-    diags.diagnose(baseDecl, diag::overridden_here);
-  }
 
   bool isAccessor = isa<AccessorDecl>(decl);
 
@@ -859,11 +819,8 @@ bool OverrideMatcher::checkOverride(ValueDecl *baseDecl,
       auto matchASD = cast<AbstractStorageDecl>(baseDecl);
       if (matchASD->isSetterAccessibleFrom(dc)) {
         // Match sure we've created the setter.
-        if (!matchASD->getSetter()) {
-          maybeAddAccessorsToStorage(
-                           *static_cast<TypeChecker *>(ctx.getLazyResolver()),
-                           matchASD);
-        }
+        if (!matchASD->getSetter())
+          maybeAddAccessorsToStorage(matchASD);
 
         auto matchSetterAccessScope = matchASD->getSetter()
           ->getFormalAccessScope(dc);
@@ -894,6 +851,59 @@ bool OverrideMatcher::checkOverride(ValueDecl *baseDecl,
       diags.diagnose(baseDecl, diag::overridden_here);
     }
   }
+}
+
+bool OverrideMatcher::checkOverride(ValueDecl *baseDecl,
+                                    OverrideCheckingAttempt attempt) {
+  auto &diags = ctx.Diags;
+  auto baseTy = getMemberTypeForComparison(ctx, baseDecl, decl);
+  bool emittedMatchError = false;
+
+  // If the name of our match differs from the name we were looking for,
+  // complain.
+  if (decl->getFullName() != baseDecl->getFullName()) {
+    auto diag = diags.diagnose(decl, diag::override_argument_name_mismatch,
+                               isa<ConstructorDecl>(decl),
+                               decl->getFullName(),
+                               baseDecl->getFullName());
+    fixDeclarationName(diag, decl, baseDecl->getFullName());
+    emittedMatchError = true;
+  }
+
+  // If we have an explicit ownership modifier and our parent doesn't,
+  // complain.
+  auto parentAttr =
+      baseDecl->getAttrs().getAttribute<ReferenceOwnershipAttr>();
+  if (auto ownershipAttr =
+          decl->getAttrs().getAttribute<ReferenceOwnershipAttr>()) {
+    ReferenceOwnership parentOwnership;
+    if (parentAttr)
+      parentOwnership = parentAttr->get();
+    else
+      parentOwnership = ReferenceOwnership::Strong;
+    if (parentOwnership != ownershipAttr->get()) {
+      diags.diagnose(decl, diag::override_ownership_mismatch,
+                     parentOwnership, ownershipAttr->get());
+      diags.diagnose(baseDecl, diag::overridden_here);
+    }
+  }
+
+  // If a super method returns Self, and the subclass overrides it to
+  // instead return the subclass type, complain.
+  // This case gets this far because the type matching above specifically
+  // strips out dynamic self via replaceCovariantResultType(), and that
+  // is helpful in several cases - just not this one.
+  auto dc = decl->getDeclContext();
+  auto classDecl = dc->getSelfClassDecl();
+  if (decl->getASTContext().isSwiftVersionAtLeast(5) &&
+      baseDecl->getInterfaceType()->hasDynamicSelfType() &&
+      !decl->getInterfaceType()->hasDynamicSelfType() &&
+      !classDecl->isFinal()) {
+    diags.diagnose(decl, diag::override_dynamic_self_mismatch);
+    diags.diagnose(baseDecl, diag::overridden_here);
+  }
+
+  checkOverrideAccessControl(baseDecl, decl, ctx);
 
   bool mayHaveMismatchedOptionals =
       (attempt == OverrideCheckingAttempt::MismatchedOptional ||
@@ -1205,6 +1215,7 @@ namespace  {
     UNINTERESTING_ATTR(Convenience)
     UNINTERESTING_ATTR(Semantics)
     UNINTERESTING_ATTR(SetterAccess)
+    UNINTERESTING_ATTR(HasStorage)
     UNINTERESTING_ATTR(UIApplicationMain)
     UNINTERESTING_ATTR(UsableFromInline)
     UNINTERESTING_ATTR(ObjCNonLazyRealization)
@@ -1232,7 +1243,6 @@ namespace  {
     UNINTERESTING_ATTR(SynthesizedProtocol)
     UNINTERESTING_ATTR(RequiresStoredPropertyInits)
     UNINTERESTING_ATTR(Transparent)
-    UNINTERESTING_ATTR(HasStorage)
     UNINTERESTING_ATTR(Testable)
 
     UNINTERESTING_ATTR(WarnUnqualifiedAccess)
@@ -1326,7 +1336,7 @@ OverrideRequiresKeyword swift::overrideRequiresKeyword(ValueDecl *overridden) {
   return OverrideRequiresKeyword::Always;
 }
 
-/// \brief Returns true if the availability of the overriding declaration
+/// Returns true if the availability of the overriding declaration
 /// makes it a safe override, given the availability of the base declaration.
 static bool isAvailabilitySafeForOverride(ValueDecl *override,
                                           ValueDecl *base) {
@@ -1477,7 +1487,7 @@ static bool checkSingleOverride(ValueDecl *override, ValueDecl *base) {
     // read-only.  Observing properties look at change, read-only properties
     // have nothing to observe!
     bool baseIsSettable = baseASD->isSettable(baseASD->getDeclContext());
-    if (baseIsSettable && ctx.LangOpts.EnableAccessControl) {
+    if (baseIsSettable) {
       baseIsSettable =
          baseASD->isSetterAccessibleFrom(overrideASD->getDeclContext());
     }
@@ -1767,13 +1777,9 @@ OverriddenDeclsRequest::evaluate(Evaluator &evaluator, ValueDecl *decl) const {
 
     // Check the various overridden storage declarations.
     SmallVector<OverrideMatch, 2> matches;
-    ASTContext &ctx = decl->getASTContext();
     for (auto overridden : overridingASD->getOverriddenDecls()) {
       auto baseASD = cast<AbstractStorageDecl>(overridden);
-      if (auto lazyResolver = ctx.getLazyResolver()) {
-        maybeAddAccessorsToStorage(*static_cast<TypeChecker *>(lazyResolver),
-                                   baseASD);
-      }
+      maybeAddAccessorsToStorage(baseASD);
 
       auto kind = accessor->getAccessorKind();
 

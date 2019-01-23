@@ -119,7 +119,7 @@ void IRGenModule::setTrueConstGlobal(llvm::GlobalVariable *var) {
     var->setSection(".rdata");
     break;
   case llvm::Triple::Wasm:
-    llvm_unreachable("web assembly object format is not supported.");
+    var->setSection(".rodata");
     break;
   }
 }
@@ -510,6 +510,7 @@ namespace {
     
     void layout() {
       super::layout();
+      asImpl().addGenericSignature();
     }
   
     ConstantReference getParent() {
@@ -522,7 +523,7 @@ namespace {
     }
     
     GenericSignature *getGenericSignature() {
-      return nullptr;
+      return DC->getGenericSignatureOfContext();
     }
     
     bool isUniqueDescriptor() {
@@ -725,6 +726,15 @@ namespace {
                                   entry.getAssociatedConformancePath(),
                                   entry.getAssociatedConformanceRequirement());
           IGM.defineAssociatedConformanceDescriptor(
+              conformance,
+              B.getAddrOfCurrentPosition(IGM.ProtocolRequirementStructTy));
+        }
+
+        if (entry.isBase()) {
+          // Define a base conformance descriptor, which is just an associated
+          // conformance descriptor for a base protocol.
+          BaseConformance conformance(Proto, entry.getBase());
+          IGM.defineBaseConformanceDescriptor(
               conformance,
               B.getAddrOfCurrentPosition(IGM.ProtocolRequirementStructTy));
         }
@@ -1189,37 +1199,6 @@ namespace {
     }
     return numFields;
   }
-  
-  /// Track the field types of a struct or class for reflection metadata
-  /// emission.
-  static void
-  addFieldTypes(IRGenModule &IGM, NominalTypeDecl *type,
-                NominalTypeDecl::StoredPropertyRange storedProperties) {
-    SmallVector<CanType, 4> types;
-    for (VarDecl *prop : storedProperties) {
-      auto propertyType = type->mapTypeIntoContext(prop->getInterfaceType())
-                              ->getCanonicalType();
-      types.push_back(propertyType);
-    }
-
-    IGM.addFieldTypes(types);
-  }
-  
-  /// Track the payload types of an enum for reflection metadata
-  /// emission.
-  static void addFieldTypes(IRGenModule &IGM,
-                            ArrayRef<EnumImplStrategy::Element> enumElements) {
-    SmallVector<CanType, 4> types;
-
-    for (auto &elt : enumElements) {
-      auto caseType = elt.decl->getParentEnum()->mapTypeIntoContext(
-        elt.decl->getArgumentInterfaceType())
-          ->getCanonicalType();
-      types.push_back(caseType);
-    }
-
-    IGM.addFieldTypes(types);
-  }
 
   class StructContextDescriptorBuilder
     : public TypeContextDescriptorBuilderBase<StructContextDescriptorBuilder,
@@ -1255,7 +1234,9 @@ namespace {
       // uint32_t FieldOffsetVectorOffset;
       B.addInt32(FieldVectorOffset / IGM.getPointerSize());
 
-      addFieldTypes(IGM, getType(), properties);
+      // For any nominal type metadata required for reflection.
+      for (auto *prop : properties)
+        IGM.IRGen.noteUseOfTypeMetadata(prop->getValueInterfaceType());
     }
     
     uint16_t getKindSpecificFlags() {
@@ -1327,7 +1308,9 @@ namespace {
       // uint32_t NumEmptyCases;
       B.addInt32(Strategy.getElementsWithNoPayload().size());
 
-      addFieldTypes(IGM, Strategy.getElementsWithPayload());
+      // For any nominal type metadata required for reflection.
+      for (auto elt : Strategy.getElementsWithPayload())
+        IGM.IRGen.noteUseOfTypeMetadata(elt.decl->getArgumentInterfaceType());
     }
     
     uint16_t getKindSpecificFlags() {
@@ -1381,7 +1364,7 @@ namespace {
                                   RequireMetadata_t requireMetadata)
       : super(IGM, Type, requireMetadata),
         VTable(IGM.getSILModule().lookUpVTable(getType())),
-        Resilient(IGM.isResilient(Type, ResilienceExpansion::Minimal)) {
+        Resilient(IGM.hasResilientMetadata(Type, ResilienceExpansion::Minimal)) {
 
       if (getType()->isForeign()) return;
 
@@ -1485,7 +1468,7 @@ namespace {
 
       // Only emit a method lookup function if the class is resilient
       // and has a non-empty vtable.
-      if (IGM.isResilient(getType(), ResilienceExpansion::Minimal))
+      if (IGM.hasResilientMetadata(getType(), ResilienceExpansion::Minimal))
         IGM.emitMethodLookupFunction(getType());
 
       auto offset = MetadataLayout->hasResilientSuperclass()
@@ -1637,7 +1620,9 @@ namespace {
       // uint32_t FieldOffsetVectorOffset;
       B.addInt32(getFieldVectorOffset() / IGM.getPointerSize());
 
-      addFieldTypes(IGM, getType(), properties);
+      // For any nominal type metadata required for reflection.
+      for (auto *prop : properties)
+        IGM.IRGen.noteUseOfTypeMetadata(prop->getValueInterfaceType());
     }
   };
 } // end anonymous namespace
@@ -1675,7 +1660,10 @@ void irgen::emitLazyTypeContextDescriptor(IRGenModule &IGM,
 void irgen::emitLazyTypeMetadata(IRGenModule &IGM, NominalTypeDecl *type) {
   eraseExistingTypeContextDescriptor(IGM, type);
 
-  if (auto sd = dyn_cast<StructDecl>(type)) {
+  if (requiresForeignTypeMetadata(type)) {
+    (void)IGM.getAddrOfForeignTypeMetadataCandidate(
+        type->getDeclaredInterfaceType()->getCanonicalType());
+  } else if (auto sd = dyn_cast<StructDecl>(type)) {
     return emitStructMetadata(IGM, sd);
   } else if (auto ed = dyn_cast<EnumDecl>(type)) {
     emitEnumMetadata(IGM, ed);
@@ -1758,10 +1746,6 @@ IRGenModule::getAddrOfAnonymousContextDescriptor(DeclContext *DC,
   auto entity = LinkEntity::forAnonymousDescriptor(DC);
   return getAddrOfSharedContextDescriptor(entity, definition,
     [&]{ AnonymousContextDescriptorBuilder(*this, DC).emit(); });
-}
-
-void IRGenModule::addFieldTypes(ArrayRef<CanType> fieldTypes) {
-  IRGen.addFieldTypes(fieldTypes, this);
 }
 
 static void emitInitializeFieldOffsetVector(IRGenFunction &IGF,
@@ -2250,7 +2234,7 @@ static void emitClassMetadataBaseOffset(IRGenModule &IGM,
   // Only classes defined in resilient modules, or those that have
   // a resilient superclass need this.
   if (!layout.hasResilientSuperclass() &&
-      !IGM.isResilient(classDecl, ResilienceExpansion::Minimal)) {
+      !IGM.hasResilientMetadata(classDecl, ResilienceExpansion::Minimal)) {
     return;
   }
 
@@ -2478,17 +2462,6 @@ namespace {
       B.add(metadata);
     }
 
-    /// The runtime provides a value witness table for Builtin.NativeObject.
-    void addValueWitnessTable() {
-      ClassDecl *cls = Target;
-      
-      auto type = (cls->checkObjCAncestry() != ObjCClassKind::NonObjC
-                   ? IGM.Context.TheUnknownObjectType
-                   : IGM.Context.TheNativeObjectType);
-      auto wtable = IGM.getAddrOfValueWitnessTable(type);
-      B.add(wtable);
-    }
-
     void addDestructorFunction() {
       if (auto ptr = getAddrOfDestructorFunction(IGM, Target)) {
         B.add(*ptr);
@@ -2658,6 +2631,14 @@ namespace {
       B.addInt(IGM.SizeTy, getClassFieldOffset(IGM, baseType, var).getValue());
     }
 
+    void addValueWitnessTable() {
+      auto type = (Target->checkObjCAncestry() != ObjCClassKind::NonObjC
+                   ? IGM.Context.TheUnknownObjectType
+                   : IGM.Context.TheNativeObjectType);
+      auto wtable = IGM.getAddrOfValueWitnessTable(type);
+      B.add(wtable);
+    }
+
     void addFieldOffsetPlaceholders(MissingMemberDecl *placeholder) {
       llvm_unreachable("Fixed class metadata cannot have missing members");
     }
@@ -2689,6 +2670,11 @@ namespace {
       // Field offsets are either copied from the superclass or calculated
       // at runtime.
       B.addInt(IGM.SizeTy, 0);
+    }
+
+    void addValueWitnessTable() {
+      // The runtime fills in the value witness table for us.
+      B.add(llvm::ConstantPointerNull::get(IGM.WitnessTablePtrTy));
     }
 
     void addFieldOffsetPlaceholders(MissingMemberDecl *placeholder) {
@@ -2742,9 +2728,9 @@ namespace {
     }
 
     void addRelocationFunction() {
-      auto function = IGM.getAddrOfTypeMetadataInstantiationFunction(
-        Target, NotForDefinition);
-      B.addRelativeAddress(function);
+      // We don't use this yet, but it's available as a future customization
+      // point.
+      B.addRelativeAddressOrNull(nullptr);
     }
 
     void addDestructorFunction() {
@@ -2792,39 +2778,6 @@ namespace {
         emitInitializeClassMetadata(IGF, Target, FieldLayout, metadata,
                                     collector);
       });
-
-      emitRelocationFunction();
-    }
-
-  private:
-    /// Emit the create function for a class with resilient ancestry.
-    void emitRelocationFunction() {
-      // using MetadataRelocator =
-      //   Metadata *(TypeContextDescriptor *type, void *pattern);
-      llvm::Function *f =
-        IGM.getAddrOfTypeMetadataInstantiationFunction(Target, ForDefinition);
-      f->setAttributes(IGM.constructInitialAttributes());
-
-      IRGenFunction IGF(IGM, f);
-
-      // Skip instrumentation when building for TSan to avoid false positives.
-      // The synchronization for this happens in the Runtime and we do not see it.
-      if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
-        f->removeFnAttr(llvm::Attribute::SanitizeThread);
-
-      if (IGM.DebugInfo)
-        IGM.DebugInfo->emitArtificialFunction(IGF, f);
-
-      Explosion params = IGF.collectParameters();
-      llvm::Value *descriptor = params.claimNext();
-      llvm::Value *pattern = params.claimNext();
-
-      // Allocate class metadata using the pattern we emitted.
-      llvm::Value *metadata =
-        IGF.Builder.CreateCall(IGF.IGM.getRelocateClassMetadataFn(),
-                               {descriptor, pattern});
-
-      IGF.Builder.CreateRet(metadata);
     }
   };
 
@@ -3909,7 +3862,8 @@ bool irgen::requiresForeignTypeMetadata(NominalTypeDecl *decl) {
     llvm_unreachable("bad foreign class kind");
   }
 
-  return isa<ClangModuleUnit>(decl->getModuleScopeContext());
+  return isa<ClangModuleUnit>(decl->getModuleScopeContext()) &&
+    !isa<ProtocolDecl>(decl);
 }
 
 llvm::Constant *

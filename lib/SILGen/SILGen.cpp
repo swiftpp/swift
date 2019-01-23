@@ -179,7 +179,7 @@ static FuncDecl *diagnoseMissingIntrinsic(SILGenModule &sgm,
 
 #define FUNC_DECL(NAME, ID)                             \
   FuncDecl *SILGenModule::get##NAME(SILLocation loc) {  \
-    if (auto fn = getASTContext().get##NAME(nullptr))   \
+    if (auto fn = getASTContext().get##NAME())   \
       return fn;                                        \
     return diagnoseMissingIntrinsic(*this, loc, ID);    \
   }
@@ -677,10 +677,10 @@ void SILGenModule::visitFuncDecl(FuncDecl *fd) { emitFunction(fd); }
 /// Emit a function now, if it's externally usable or has been referenced in
 /// the current TU, or remember how to emit it later if not.
 template<typename /*void (SILFunction*)*/ Fn>
-void emitOrDelayFunction(SILGenModule &SGM,
-                         SILDeclRef constant,
-                         Fn &&emitter,
-                         bool forceEmission = false) {
+static void emitOrDelayFunction(SILGenModule &SGM,
+                                SILDeclRef constant,
+                                Fn &&emitter,
+                                bool forceEmission = false) {
   auto emitAfter = SGM.lastEmittedFunction;
 
   SILFunction *f = nullptr;
@@ -856,33 +856,18 @@ void SILGenModule::emitConstructor(ConstructorDecl *decl) {
 
   bool ForCoverageMapping = doesASTRequireProfiling(M, decl);
 
-  auto emitClassAllocatorThunk = [&]{
-    emitOrDelayFunction(
-        *this, constant, [this, constant, decl](SILFunction *f) {
-          preEmitFunction(constant, decl, f, decl);
-          PrettyStackTraceSILFunction X("silgen emitConstructor", f);
-          SILGenFunction(*this, *f, decl).emitClassConstructorAllocator(decl);
-          postEmitFunction(constant, f);
-        });
-  };
-  auto emitValueConstructorIfHasBody = [&]{
-    if (decl->hasBody()) {
+  if (declCtx->getSelfClassDecl()) {
+    // Designated initializers for classes, as well as @objc convenience
+    // initializers, have have separate entry points for allocation and
+    // initialization.
+    if (decl->isDesignatedInit() || decl->isObjC()) {
       emitOrDelayFunction(
-          *this, constant, [this, constant, decl, declCtx](SILFunction *f) {
+          *this, constant, [this, constant, decl](SILFunction *f) {
             preEmitFunction(constant, decl, f, decl);
             PrettyStackTraceSILFunction X("silgen emitConstructor", f);
-            f->setProfiler(getOrCreateProfilerForConstructors(declCtx, decl));
-            SILGenFunction(*this, *f, decl).emitValueConstructor(decl);
+            SILGenFunction(*this, *f, decl).emitClassConstructorAllocator(decl);
             postEmitFunction(constant, f);
           });
-    }
-  };
-  
-  if (declCtx->getSelfClassDecl()) {
-    // Designated initializers for classes have have separate entry points for
-    // allocation and initialization.
-    if (decl->isDesignatedInit()) {
-      emitClassAllocatorThunk();
 
       // Constructors may not have bodies if they've been imported, or if they've
       // been parsed from a parseable interface.
@@ -902,21 +887,21 @@ void SILGenModule::emitConstructor(ConstructorDecl *decl) {
             },
             /*forceEmission=*/ForCoverageMapping);
       }
-    // Convenience initializers for classes behave more like value constructors
-    // in that there's only an allocating entry point that effectively
-    // "constructs" the self reference by invoking another initializer.
-    } else {
-      emitValueConstructorIfHasBody();
-      
-      // If the convenience initializer was imported from ObjC, we still have to
-      // emit the allocator thunk.
-      if (decl->hasClangNode()) {
-        emitClassAllocatorThunk();
-      }
+      return;
     }
-  } else {
-    // Struct and enum constructors do everything in a single function.
-    emitValueConstructorIfHasBody();
+  }
+
+  // Struct and enum constructors do everything in a single function, as do
+  // non-@objc convenience initializers for classes.
+  if (decl->hasBody()) {
+    emitOrDelayFunction(
+        *this, constant, [this, constant, decl, declCtx](SILFunction *f) {
+          preEmitFunction(constant, decl, f, decl);
+          PrettyStackTraceSILFunction X("silgen emitConstructor", f);
+          f->setProfiler(getOrCreateProfilerForConstructors(declCtx, decl));
+          SILGenFunction(*this, *f, decl).emitValueConstructor(decl);
+          postEmitFunction(constant, f);
+        });
   }
 }
 
@@ -1288,9 +1273,6 @@ void SILGenModule::visitPatternBindingDecl(PatternBindingDecl *pd) {
 }
 
 void SILGenModule::visitVarDecl(VarDecl *vd) {
-  if (vd->hasBehavior())
-    emitPropertyBehavior(vd);
-
   if (vd->hasStorage())
     addGlobalVariable(vd);
 
@@ -1314,7 +1296,8 @@ void SILGenModule::visitVarDecl(VarDecl *vd) {
       case AccessorKind::Read:
         return impl.getReadImpl() != ReadImplKind::Read;
       case AccessorKind::Set:
-        return impl.getWriteImpl() != WriteImplKind::Set;
+        return impl.getWriteImpl() != WriteImplKind::Set &&
+               impl.getWriteImpl() != WriteImplKind::StoredWithObservers;
       case AccessorKind::Modify:
         return impl.getReadWriteImpl() != ReadWriteImplKind::Modify;
 #define ACCESSOR(ID) \
@@ -1368,8 +1351,6 @@ SILGenModule::canStorageUseStoredKeyPathComponent(AbstractStorageDecl *decl,
   case AccessStrategy::DispatchToAccessor:
   case AccessStrategy::MaterializeToTemporary:
     return false;
-  case AccessStrategy::BehaviorStorage:
-    llvm_unreachable("should not occur");
   }
   llvm_unreachable("unhandled strategy");
 }
@@ -1471,12 +1452,6 @@ void SILGenModule::tryEmitPropertyDescriptor(AbstractStorageDecl *decl) {
   (void)SILProperty::create(M, /*serialized*/ false, decl, component);
 }
 
-void SILGenModule::emitPropertyBehavior(VarDecl *vd) {
-  assert(vd->hasBehavior());
-  // Emit the protocol conformance to the behavior.
-  getWitnessTable(*vd->getBehavior()->Conformance);
-}
-
 void SILGenModule::visitIfConfigDecl(IfConfigDecl *ICD) {
   // Nothing to do for these kinds of decls - anything active has been added
   // to the enclosing declaration.
@@ -1499,6 +1474,8 @@ void SILGenModule::visitTopLevelCodeDecl(TopLevelCodeDecl *td) {
 
   TopLevelSGF->emitProfilerIncrement(td->getBody());
  
+  DebugScope DS(*TopLevelSGF, CleanupLocation(td));
+
   for (auto &ESD : td->getBody()->getElements()) {
     if (!TopLevelSGF->B.hasValidInsertionPoint()) {
       if (auto *S = ESD.dyn_cast<Stmt*>()) {

@@ -60,6 +60,9 @@ bool ArgsToFrontendOptionsConverter::convert(
   if (const Arg *A = Args.getLastArg(OPT_index_store_path)) {
     Opts.IndexStorePath = A->getValue();
   }
+  if (const Arg *A = Args.getLastArg(OPT_prebuilt_module_cache_path)) {
+    Opts.PrebuiltModuleCachePath = A->getValue();
+  }
 
   Opts.IndexSystemModules |= Args.hasArg(OPT_index_system_modules);
 
@@ -370,6 +373,8 @@ ArgsToFrontendOptionsConverter::determineRequestedAction(const ArgList &args) {
     return FrontendOptions::ActionType::REPL;
   if (Opt.matches(OPT_interpret))
     return FrontendOptions::ActionType::Immediate;
+  if (Opt.matches(OPT_build_module_from_parseable_interface))
+    return FrontendOptions::ActionType::BuildModuleFromParseableInterface;
 
   llvm_unreachable("Unhandled mode option");
 }

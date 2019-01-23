@@ -26,7 +26,12 @@ internal func _abstract(
 
 // MARK: Type-erased abstract base classes
 
-/// A type-erased key path, from any root type to any resulting value type.
+/// A type-erased key path, from any root type to any resulting value
+/// type. NOTE: older runtimes had Swift.AnyKeyPath as the ObjC name.
+/// The two must coexist, so it was renamed. The old name must not be
+/// used in the new runtime. _TtCs11_AnyKeyPath is the mangled name for
+/// Swift._AnyKeyPath.
+@_objcRuntimeName(_TtCs11_AnyKeyPath)
 public class AnyKeyPath: Hashable, _AppendKeyPath {
   /// The root type for this key path.
   @inlinable
@@ -734,6 +739,12 @@ internal enum KeyPathComputedIDKind {
   case vtableOffset
 }
 
+internal enum KeyPathComputedIDResolution {
+  case resolved
+  case indirectPointer
+  case functionCall
+}
+
 internal struct RawKeyPathComponent {
   internal init(header: Header, body: UnsafeRawBufferPointer) {
     self.header = header
@@ -885,9 +896,20 @@ internal struct RawKeyPathComponent {
     internal static var computedIDUnresolvedIndirectPointer: UInt32 {
       return _SwiftKeyPathComponentHeader_ComputedIDUnresolvedIndirectPointer
     }
-    internal var isComputedIDResolved: Bool {
-      return
-        payload & Header.computedIDResolutionMask == Header.computedIDResolved
+    internal static var computedIDUnresolvedFunctionCall: UInt32 {
+      return _SwiftKeyPathComponentHeader_ComputedIDUnresolvedFunctionCall
+    }
+    internal var computedIDResolution: KeyPathComputedIDResolution {
+      switch payload & Header.computedIDResolutionMask {
+      case Header.computedIDResolved:
+        return .resolved
+      case Header.computedIDUnresolvedIndirectPointer:
+        return .indirectPointer
+      case Header.computedIDUnresolvedFunctionCall:
+        return .functionCall
+      default:
+        _internalInvariantFailure("invalid key path resolution")
+      }
     }
     
     internal var _value: UInt32
@@ -2099,7 +2121,7 @@ internal func _appendingKeyPaths<
         rootKVCLength = Int(_swift_stdlib_strlen(rootPtr))
         leafKVCLength = Int(_swift_stdlib_strlen(leafPtr))
         // root + "." + leaf
-        appendedKVCLength = rootKVCLength + 1 + leafKVCLength
+        appendedKVCLength = rootKVCLength + 1 + leafKVCLength + 1
       } else {
         rootKVCLength = 0
         leafKVCLength = 0
@@ -2396,6 +2418,29 @@ internal func _getSymbolicMangledNameLength(_ base: UnsafeRawPointer) -> Int {
   return end - base
 }
 
+// Resolve a mangled name in a generic environment, described by either a
+// flat GenericEnvironment * (if the bottom tag bit is 0) or possibly-nested
+// ContextDescriptor * (if the bottom tag bit is 1)
+internal func _getTypeByMangledNameInEnvironmentOrContext(
+  _ name: UnsafePointer<UInt8>,
+  _ nameLength: UInt,
+  genericEnvironmentOrContext: UnsafeRawPointer?,
+  genericArguments: UnsafeRawPointer?)
+  -> Any.Type? {
+
+  let taggedPointer = UInt(bitPattern: genericEnvironmentOrContext)
+  if taggedPointer & 1 == 0 {
+    return _getTypeByMangledNameInEnvironment(name, nameLength,
+                      genericEnvironment: genericEnvironmentOrContext,
+                      genericArguments: genericArguments)
+  } else {
+    let context = UnsafeRawPointer(bitPattern: taggedPointer & ~1)
+    return _getTypeByMangledNameInContext(name, nameLength,
+                      genericContext: context,
+                      genericArguments: genericArguments)
+  }
+}
+
 // Resolve the given generic argument reference to a generic argument.
 internal func _resolveKeyPathGenericArgReference(
     _ reference: UnsafeRawPointer,
@@ -2431,8 +2476,8 @@ internal func _resolveKeyPathGenericArgReference(
                                           capacity: nameLength + 1)
   // FIXME: Could extract this information from the mangled name.
   guard let result =
-    _getTypeByMangledName(namePtr, UInt(nameLength),
-                         genericEnvironment: genericEnvironment,
+    _getTypeByMangledNameInEnvironmentOrContext(namePtr, UInt(nameLength),
+                         genericEnvironmentOrContext: genericEnvironment,
                          genericArguments: arguments)
     else {
       let nameStr = String._fromUTF8Repairing(
@@ -2484,7 +2529,7 @@ internal protocol KeyPathPatternVisitor {
                                      offset: KeyPathPatternStoredOffset)
   mutating func visitComputedComponent(mutating: Bool,
                                        idKind: KeyPathComputedIDKind,
-                                       idResolved: Bool,
+                                       idResolution: KeyPathComputedIDResolution,
                                        idValueBase: UnsafeRawPointer,
                                        idValue: Int32,
                                        getter: UnsafeRawPointer,
@@ -2666,7 +2711,7 @@ internal func _walkKeyPathPattern<W: KeyPathPatternVisitor>(
 
       walker.visitComputedComponent(mutating: header.isComputedMutating,
                                     idKind: header.computedIDKind,
-                                    idResolved: header.isComputedIDResolved,
+                                    idResolution: header.computedIDResolution,
                                     idValueBase: idValueBase,
                                     idValue: idValue,
                                     getter: getter,
@@ -2757,7 +2802,7 @@ internal func _walkKeyPathPattern<W: KeyPathPatternVisitor>(
         walker.visitComputedComponent(
           mutating: descriptorHeader.isComputedMutating,
           idKind: descriptorHeader.computedIDKind,
-          idResolved: descriptorHeader.isComputedIDResolved,
+          idResolution: descriptorHeader.computedIDResolution,
           idValueBase: idValueBase,
           idValue: idValue,
           getter: getter,
@@ -2865,7 +2910,7 @@ internal struct GetKeyPathClassAndInstanceSizeFromPattern
 
   mutating func visitComputedComponent(mutating: Bool,
                                    idKind: KeyPathComputedIDKind,
-                                   idResolved: Bool,
+                                   idResolution: KeyPathComputedIDResolution,
                                    idValueBase: UnsafeRawPointer,
                                    idValue: Int32,
                                    getter: UnsafeRawPointer,
@@ -3121,7 +3166,7 @@ internal struct InstantiateKeyPathBuffer : KeyPathPatternVisitor {
 
   mutating func visitComputedComponent(mutating: Bool,
                                    idKind: KeyPathComputedIDKind,
-                                   idResolved: Bool,
+                                   idResolution: KeyPathComputedIDResolution,
                                    idValueBase: UnsafeRawPointer,
                                    idValue: Int32,
                                    getter: UnsafeRawPointer,
@@ -3140,7 +3185,7 @@ internal struct InstantiateKeyPathBuffer : KeyPathPatternVisitor {
 
     switch idKind {
     case .storedPropertyIndex, .vtableOffset:
-      _internalInvariant(idResolved)
+      _internalInvariant(idResolution == .resolved)
       // Zero-extend the integer value to get the instantiated id.
       let value = UInt(UInt32(bitPattern: idValue))
       resolvedID = UnsafeRawPointer(bitPattern: value)
@@ -3149,11 +3194,26 @@ internal struct InstantiateKeyPathBuffer : KeyPathPatternVisitor {
       // Resolve the sign-extended relative reference.
       var absoluteID: UnsafeRawPointer? = idValueBase + Int(idValue)
 
-      // If the pointer ID is "unresolved", then it needs another indirection
-      // to get the final value.
-      if !idResolved {
+      // If the pointer ID is unresolved, then it needs work to get to
+      // the final value.
+      switch idResolution {
+      case .resolved:
+        break
+
+      case .indirectPointer:
+        // The pointer in the pattern is an indirect pointer to the real
+        // identifier pointer.
         absoluteID = absoluteID.unsafelyUnwrapped
           .load(as: UnsafeRawPointer?.self)
+
+      case .functionCall:
+        // The pointer in the pattern is to a function that generates the
+        // identifier pointer.
+        typealias Resolver = @convention(c) (UnsafeRawPointer?) -> UnsafeRawPointer?
+        let resolverFn = unsafeBitCast(absoluteID.unsafelyUnwrapped,
+                                       to: Resolver.self)
+
+        absoluteID = resolverFn(patternArgs)
       }
       resolvedID = absoluteID
     }
@@ -3313,7 +3373,7 @@ internal struct ValidatingInstantiateKeyPathBuffer: KeyPathPatternVisitor {
   }
   mutating func visitComputedComponent(mutating: Bool,
                                    idKind: KeyPathComputedIDKind,
-                                   idResolved: Bool,
+                                   idResolution: KeyPathComputedIDResolution,
                                    idValueBase: UnsafeRawPointer,
                                    idValue: Int32,
                                    getter: UnsafeRawPointer,
@@ -3322,7 +3382,7 @@ internal struct ValidatingInstantiateKeyPathBuffer: KeyPathPatternVisitor {
                                    externalArgs: UnsafeBufferPointer<Int32>?) {
     sizeVisitor.visitComputedComponent(mutating: mutating,
                                        idKind: idKind,
-                                       idResolved: idResolved,
+                                       idResolution: idResolution,
                                        idValueBase: idValueBase,
                                        idValue: idValue,
                                        getter: getter,
@@ -3331,7 +3391,7 @@ internal struct ValidatingInstantiateKeyPathBuffer: KeyPathPatternVisitor {
                                        externalArgs: externalArgs)
     instantiateVisitor.visitComputedComponent(mutating: mutating,
                                        idKind: idKind,
-                                       idResolved: idResolved,
+                                       idResolution: idResolution,
                                        idValueBase: idValueBase,
                                        idValue: idValue,
                                        getter: getter,

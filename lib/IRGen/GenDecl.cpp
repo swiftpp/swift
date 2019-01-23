@@ -189,9 +189,7 @@ public:
       return;
 
     llvm::Constant *name, *imp, *types;
-    emitObjCMethodDescriptorParts(IGM, method,
-                                  /*extended*/false,
-                                  /*concrete*/true,
+    emitObjCMethodDescriptorParts(IGM, method, /*concrete*/true,
                                   name, types, imp);
     
     // When generating JIT'd code, we need to call sel_registerName() to force
@@ -215,8 +213,7 @@ public:
   void visitConstructorDecl(ConstructorDecl *constructor) {
     if (!requiresObjCMethodDescriptor(constructor)) return;
     llvm::Constant *name, *imp, *types;
-    emitObjCMethodDescriptorParts(IGM, constructor, /*extended*/false,
-                                  /*concrete*/true,
+    emitObjCMethodDescriptorParts(IGM, constructor, /*concrete*/true,
                                   name, types, imp);
 
     // When generating JIT'd code, we need to call sel_registerName() to force
@@ -391,9 +388,13 @@ public:
   void visitMissingMemberDecl(MissingMemberDecl *placeholder) {}
 
   void visitAbstractFunctionDecl(AbstractFunctionDecl *method) {
+    if (isa<AccessorDecl>(method)) {
+      // Accessors are handled as part of their AbstractStorageDecls.
+      return;
+    }
+
     llvm::Constant *name, *imp, *types;
-    emitObjCMethodDescriptorParts(IGM, method, /*extended*/true,
-                                  /*concrete*/false,
+    emitObjCMethodDescriptorParts(IGM, method, /*concrete*/false,
                                   name, types, imp);
     
     // When generating JIT'd code, we need to call sel_registerName() to force
@@ -438,7 +439,8 @@ public:
     Builder.CreateCall(protocol_addMethodDescription, getterArgs);
     
     if (prop->isSettable(nullptr)) {
-      emitObjCSetterDescriptorParts(IGM, prop, name, types, imp);
+      emitObjCSetterDescriptorParts(IGM, prop,
+                                    name, types, imp);
       sel = Builder.CreateCall(IGM.getObjCSelRegisterNameFn(), name);
       llvm::Value *setterArgs[] = {
         NewProto, sel, types,
@@ -769,6 +771,7 @@ IRGenModule::getAddrOfParentContextDescriptor(DeclContext *from,
   case DeclContextKind::AbstractClosureExpr:
   case DeclContextKind::AbstractFunctionDecl:
   case DeclContextKind::SubscriptDecl:
+  case DeclContextKind::EnumElementDecl:
   case DeclContextKind::TopLevelCodeDecl:
   case DeclContextKind::Initializer:
   case DeclContextKind::SerializedLocal:
@@ -899,7 +902,7 @@ std::string IRGenModule::GetObjCSectionName(StringRef Section,
   case llvm::Triple::COFF:
     return ("." + Section.substr(2) + "$B").str();
   case llvm::Triple::Wasm:
-    error(SourceLoc(), "wasm is not a supported object file format");
+    return Section.substr(2).str();
   }
 
   llvm_unreachable("unexpected object file format");
@@ -930,7 +933,6 @@ void IRGenModule::SetCStringLiteralSection(llvm::GlobalVariable *GV,
   case llvm::Triple::COFF:
     return;
   case llvm::Triple::Wasm:
-    error(SourceLoc(), "wasm is not a supported object file format");
     return;
   }
 
@@ -983,7 +985,7 @@ static bool hasCodeCoverageInstrumentation(SILFunction &f, SILModule &m) {
   return f.getProfiler() && m.getOptions().EmitProfileCoverageMapping;
 }
 
-void IRGenerator::emitGlobalTopLevel(bool emitForParallelEmission) {
+void IRGenerator::emitGlobalTopLevel() {
   // Generate order numbers for the functions in the SIL module that
   // correspond to definitions in the LLVM module.
   unsigned nextOrderNumber = 0;
@@ -994,10 +996,14 @@ void IRGenerator::emitGlobalTopLevel(bool emitForParallelEmission) {
   }
 
   // Ensure that relative symbols are collocated in the same LLVM module.
-  for (SILWitnessTable &wt : PrimaryIGM->getSILModule().getWitnessTableList()) {
+  for (auto &wt : PrimaryIGM->getSILModule().getWitnessTableList()) {
     CurrentIGMPtr IGM = getGenModule(wt.getDeclContext());
-    if (emitForParallelEmission)
-      IGM->ensureRelativeSymbolCollocation(wt);
+    ensureRelativeSymbolCollocation(wt);
+  }
+
+  for (auto &wt : PrimaryIGM->getSILModule().getDefaultWitnessTableList()) {
+    CurrentIGMPtr IGM = getGenModule(wt.getProtocol()->getDeclContext());
+    ensureRelativeSymbolCollocation(wt);
   }
 
   for (SILGlobalVariable &v : PrimaryIGM->getSILModule().getSILGlobals()) {
@@ -1097,29 +1103,7 @@ void IRGenerator::emitLazyDefinitions() {
   while (!LazyTypeMetadata.empty() ||
          !LazyTypeContextDescriptors.empty() ||
          !LazyFunctionDefinitions.empty() ||
-         !LazyFieldTypes.empty() ||
          !LazyWitnessTables.empty()) {
-
-    while (!LazyFieldTypes.empty()) {
-      auto info = LazyFieldTypes.pop_back_val();
-      auto &IGM = *info.IGM;
-
-      for (auto fieldType : info.fieldTypes) {
-        if (fieldType->hasArchetype())
-          continue;
-
-        // All of the required attributes are going to be preserved
-        // by field reflection metadata in the mangled name, so
-        // there is no need to worry about ownership semantics here.
-        if (auto refStorTy = dyn_cast<ReferenceStorageType>(fieldType))
-          fieldType = refStorTy.getReferentType();
-
-        // Make sure that all of the field type metadata is forced,
-        // otherwise there might be a problem when fields are accessed
-        // through reflection.
-        (void)irgen::getOrCreateTypeMetadataAccessFunction(IGM, fieldType);
-      }
-    }
 
     // Emit any lazy type metadata we require.
     while (!LazyTypeMetadata.empty()) {
@@ -1184,7 +1168,12 @@ void IRGenerator::noteUseOfTypeGlobals(NominalTypeDecl *type,
   // Try to create a new record of the fact that we used this type.
   auto insertResult = LazyTypeGlobals.try_emplace(type);
   auto &entry = insertResult.first->second;
-  
+
+  // Imported structs and enums types are known to be lazy.
+  if (insertResult.second) {
+    entry.IsLazy = requiresForeignTypeMetadata(type);
+  }
+
   bool metadataWasUsed = entry.IsMetadataUsed;
   bool descriptorWasUsed = entry.IsDescriptorUsed;
 
@@ -1226,18 +1215,19 @@ void IRGenerator::noteUseOfTypeGlobals(NominalTypeDecl *type,
 static std::string getDynamicReplacementSection(IRGenModule &IGM) {
   std::string sectionName;
   switch (IGM.TargetInfo.OutputObjectFormat) {
+  case llvm::Triple::UnknownObjectFormat:
+    llvm_unreachable("Don't know how to emit field records table for "
+                     "the selected object format.");
   case llvm::Triple::MachO:
     sectionName = "__TEXT, __swift5_replace, regular, no_dead_strip";
     break;
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     sectionName = "swift5_replace";
     break;
   case llvm::Triple::COFF:
     sectionName = ".sw5repl$B";
     break;
-  default:
-    llvm_unreachable("Don't know how to emit field records table for "
-                     "the selected object format.");
   }
   return sectionName;
 }
@@ -1425,9 +1415,8 @@ void IRGenModule::emitVTableStubs() {
 
     if (F.getEffectiveSymbolLinkage() == SILLinkage::Hidden)
       alias->setVisibility(llvm::GlobalValue::HiddenVisibility);
-
-    if (useDllStorage())
-      alias->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    else
+      ApplyIRLinkage(IRLinkage::ExternalExport).to(alias);
   }
 }
 
@@ -1589,9 +1578,6 @@ llvm::Function *irgen::createFunction(IRGenModule &IGM,
 
   llvm::Function *fn =
     llvm::Function::Create(signature.getType(), linkInfo.getLinkage(), name);
-  // TODO(compnerd) apply COMDAT to definitions
-  fn->setVisibility(linkInfo.getVisibility());
-  fn->setDLLStorageClass(linkInfo.getDLLStorage());
   fn->setCallingConv(signature.getCallingConv());
 
   if (insertBefore) {
@@ -1599,6 +1585,9 @@ llvm::Function *irgen::createFunction(IRGenModule &IGM,
   } else {
     IGM.Module.getFunctionList().push_back(fn);
   }
+
+  ApplyIRLinkage({linkInfo.getLinkage(), linkInfo.getVisibility(), linkInfo.getDLLStorage()})
+      .to(fn);
 
   llvm::AttrBuilder initialAttrs;
   IGM.constructInitialFnAttributes(initialAttrs, FuncOptMode);
@@ -1919,6 +1908,8 @@ Address IRGenModule::getAddrOfSILGlobalVariable(SILGlobalVariable *var,
     /// Add a zero initializer.
     if (forDefinition)
       gvar->setInitializer(llvm::Constant::getNullValue(storageTypeWithContainer));
+    else
+      gvar->setComdat(nullptr);
   }
   llvm::Constant *addr = gvar;
   if (var->isInitializedObject()) {
@@ -2200,8 +2191,11 @@ llvm::Function *IRGenModule::getAddrOfSILFunction(
   // associated with it.  The combination of the two allows us to identify the
   // @_silgen_name functions.  These are locally defined function thunks used in
   // the standard library.  Do not give them DLLImport DLL Storage.
-  if (useDllStorage() && f->hasCReferences() && !forDefinition)
-    fn->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+  if (!forDefinition) {
+    fn->setComdat(nullptr);
+    if (f->hasCReferences())
+      fn->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+  }
 
   // If we have an order number for this function, set it up as appropriate.
   if (hasOrderNumber) {
@@ -2560,28 +2554,12 @@ getProtocolDescriptorEntityReference(IRGenModule &IGM, ProtocolDecl *protocol) {
 }
 
 static TypeEntityReference
-getObjCClassRefEntityReference(IRGenModule &IGM, ClassDecl *cls) {
-  // A reference to an Objective-C class object.
-  assert(cls->isObjC() && "Must have an Objective-C class here");
-
-  auto kind = TypeReferenceKind::IndirectObjCClass;
-  auto entity = LinkEntity::forObjCClassRef(cls);
-
-  auto ref = IGM.getAddrOfLLVMVariableOrGOTEquivalent(entity);
-  assert(!ref.isIndirect());
-
-  return TypeEntityReference(kind, ref.getValue());
-}
-
-static TypeEntityReference
-getRuntimeOnlyClassEntityReference(IRGenModule &IGM, ClassDecl *cls) {
-  assert(cls->getForeignClassKind() == ClassDecl::ForeignKind::RuntimeOnly);
-
-  auto namedClangDecl = Mangle::ASTMangler::getClangDeclForMangling(cls);
-  assert(namedClangDecl);
-
+getObjCClassByNameReference(IRGenModule &IGM, ClassDecl *cls) {
   auto kind = TypeReferenceKind::DirectObjCClassName;
-  auto ref = IGM.getAddrOfGlobalString(namedClangDecl->getName());
+  SmallString<64> objcRuntimeNameBuffer;
+  auto ref = IGM.getAddrOfGlobalString(
+                                 cls->getObjCRuntimeName(objcRuntimeNameBuffer),
+                                 /*willByRelativelyAddressed=*/true);
 
   return TypeEntityReference(kind, ref);
 }
@@ -2600,7 +2578,7 @@ IRGenModule::getTypeEntityReference(NominalTypeDecl *decl) {
 
   switch (clas->getForeignClassKind()) {
   case ClassDecl::ForeignKind::RuntimeOnly:
-    return getRuntimeOnlyClassEntityReference(*this, clas);
+    return getObjCClassByNameReference(*this, clas);
 
   case ClassDecl::ForeignKind::CFType:
     return getTypeContextDescriptorEntityReference(*this, clas);
@@ -2608,9 +2586,14 @@ IRGenModule::getTypeEntityReference(NominalTypeDecl *decl) {
   case ClassDecl::ForeignKind::Normal:
     if (hasKnownSwiftMetadata(*this, clas)) {
       return getTypeContextDescriptorEntityReference(*this, clas);
-    } else {
-      return getObjCClassRefEntityReference(*this, clas);
     }
+
+    // Note: we would like to use an Objective-C class reference, but the
+    // Darwin linker currently has a bug where it will coalesce these symbols
+    // *after* computing a relative offset, causing incorrect relative
+    // offsets in the metadata. Therefore, reference Objective-C classes by
+    // their runtime names.
+    return getObjCClassByNameReference(*this, clas);
   }
   llvm_unreachable("bad foreign type kind");
 }
@@ -2700,18 +2683,19 @@ llvm::Constant *IRGenModule::emitSwiftProtocols() {
 
   StringRef sectionName;
   switch (TargetInfo.OutputObjectFormat) {
+  case llvm::Triple::UnknownObjectFormat:
+    llvm_unreachable("Don't know how to emit protocols for "
+                     "the selected object format.");
   case llvm::Triple::MachO:
     sectionName = "__TEXT, __swift5_protos, regular, no_dead_strip";
     break;
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     sectionName = "swift5_protocols";
     break;
   case llvm::Triple::COFF:
     sectionName = ".sw5prt$B";
     break;
-  default:
-    llvm_unreachable("Don't know how to emit protocols for "
-                     "the selected object format.");
   }
 
   var->setSection(sectionName);
@@ -2729,20 +2713,12 @@ void IRGenModule::addProtocolConformance(ConformanceDescription &&record) {
 
 /// Emit the protocol conformance list and return it.
 llvm::Constant *IRGenModule::emitProtocolConformances() {
-  // Emit the conformances.
-  bool anyReflectedConformances = false;
-  for (const auto &record : ProtocolConformances) {
-    // Emit the protocol conformance now.
-    emitProtocolConformance(record);
-
-    if (record.conformance->isBehaviorConformance())
-      continue;
-
-    anyReflectedConformances = true;
-  }
-
-  if (!anyReflectedConformances)
+  if (ProtocolConformances.empty())
     return nullptr;
+
+  // Emit the conformances.
+  for (const auto &record : ProtocolConformances)
+    emitProtocolConformance(record);
 
   // Define the global variable for the conformance list.
   ConstantInitBuilder builder(*this);
@@ -2750,11 +2726,6 @@ llvm::Constant *IRGenModule::emitProtocolConformances() {
 
   for (const auto &record : ProtocolConformances) {
     auto conformance = record.conformance;
-
-    // Behavior conformances cannot be reflected.
-    if (conformance->isBehaviorConformance())
-      continue;
-
     auto entity = LinkEntity::forProtocolConformanceDescriptor(conformance);
     auto descriptor =
       getAddrOfLLVMVariable(entity, ConstantInit(), DebugTypeInfo());
@@ -2772,18 +2743,19 @@ llvm::Constant *IRGenModule::emitProtocolConformances() {
 
   StringRef sectionName;
   switch (TargetInfo.OutputObjectFormat) {
+  case llvm::Triple::UnknownObjectFormat:
+    llvm_unreachable("Don't know how to emit protocol conformances for "
+                     "the selected object format.");
   case llvm::Triple::MachO:
     sectionName = "__TEXT, __swift5_proto, regular, no_dead_strip";
     break;
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     sectionName = "swift5_protocol_conformances";
     break;
   case llvm::Triple::COFF:
     sectionName = ".sw5prtc$B";
     break;
-  default:
-    llvm_unreachable("Don't know how to emit protocol conformances for "
-                     "the selected object format.");
   }
 
   var->setSection(sectionName);
@@ -2803,12 +2775,13 @@ llvm::Constant *IRGenModule::emitTypeMetadataRecords() {
     sectionName = "__TEXT, __swift5_types, regular, no_dead_strip";
     break;
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     sectionName = "swift5_type_metadata";
     break;
   case llvm::Triple::COFF:
     sectionName = ".sw5tymd$B";
     break;
-  default:
+  case llvm::Triple::UnknownObjectFormat:
     llvm_unreachable("Don't know how to emit type metadata table for "
                      "the selected object format.");
   }
@@ -2870,12 +2843,13 @@ llvm::Constant *IRGenModule::emitFieldDescriptors() {
     sectionName = "__TEXT, __swift5_fieldmd, regular, no_dead_strip";
     break;
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     sectionName = "swift5_fieldmd";
     break;
   case llvm::Triple::COFF:
     sectionName = ".swift5_fieldmd";
     break;
-  default:
+  case llvm::Triple::UnknownObjectFormat:
     llvm_unreachable("Don't know how to emit field records table for "
                      "the selected object format.");
   }
@@ -3536,6 +3510,19 @@ llvm::GlobalValue *IRGenModule::defineAssociatedConformanceDescriptor(
   return defineAlias(entity, definition);
 }
 
+llvm::Constant *IRGenModule::getAddrOfBaseConformanceDescriptor(
+                                                BaseConformance conformance) {
+  auto entity = LinkEntity::forBaseConformanceDescriptor(conformance);
+  return getAddrOfLLVMVariable(entity, ConstantInit(), DebugTypeInfo());
+}
+
+llvm::GlobalValue *IRGenModule::defineBaseConformanceDescriptor(
+                                            BaseConformance conformance,
+                                            llvm::Constant *definition) {
+  auto entity = LinkEntity::forBaseConformanceDescriptor(conformance);
+  return defineAlias(entity, definition);
+}
+
 llvm::Constant *IRGenModule::getAddrOfProtocolConformanceDescriptor(
                                 const RootProtocolConformance *conformance,
                                 ConstantInit definition) {
@@ -3857,6 +3844,20 @@ bool IRGenModule::isResilient(NominalTypeDecl *D, ResilienceExpansion expansion)
     return false;
   }
   return D->isResilient(getSwiftModule(), expansion);
+}
+
+/// Do we have to use resilient access patterns when working with this
+/// class?
+///
+/// For classes, this means that virtual method calls use dispatch thunks
+/// rather than accessing metadata members directly.
+bool IRGenModule::hasResilientMetadata(ClassDecl *D,
+                                       ResilienceExpansion expansion) {
+  if (expansion == ResilienceExpansion::Maximal &&
+      Types.getLoweringMode() == TypeConverter::Mode::CompletelyFragile) {
+    return false;
+  }
+  return D->hasResilientMetadata(getSwiftModule(), expansion);
 }
 
 // The most general resilience expansion where the given declaration is visible.

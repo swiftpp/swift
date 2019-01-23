@@ -230,6 +230,13 @@ class LinkEntity {
     /// is stored in the data.
     DefaultAssociatedConformanceAccessor,
 
+    /// An descriptor for an base conformance within a protocol, which
+    /// will alias the TargetProtocolRequirement descripting this
+    /// particular base conformance.
+    /// The pointer is a ProtocolDecl*; the index of the base conformance
+    /// is stored in the data.
+    BaseConformanceDescriptor,
+
     /// A global function pointer for dynamically replaceable functions.
     /// The pointer is a AbstractStorageDecl*.
     DynamicallyReplaceableFunctionVariableAST,
@@ -811,6 +818,18 @@ public:
   }
 
   static LinkEntity
+  forBaseConformanceDescriptor(BaseConformance conformance) {
+    LinkEntity entity;
+    entity.setForProtocolAndAssociatedConformance(
+        Kind::BaseConformanceDescriptor,
+        conformance.getSourceProtocol(),
+        conformance.getSourceProtocol()->getSelfInterfaceType()
+          ->getCanonicalType(),
+        conformance.getBaseRequirement());
+    return entity;
+  }
+
+  static LinkEntity
   forAssociatedTypeWitnessTableAccessFunction(const ProtocolConformance *C,
                                      const AssociatedConformance &association) {
     LinkEntity entity;
@@ -963,7 +982,8 @@ public:
     }
 
     assert(getKind() == Kind::AssociatedConformanceDescriptor ||
-           getKind() == Kind::DefaultAssociatedConformanceAccessor);
+           getKind() == Kind::DefaultAssociatedConformanceAccessor ||
+           getKind() == Kind::BaseConformanceDescriptor);
     return getAssociatedConformanceByIndex(
              cast<ProtocolDecl>(getDecl()),
              LINKENTITY_GET_FIELD(Data, AssociatedConformanceIndex));
@@ -1023,7 +1043,11 @@ struct IRLinkage {
   llvm::GlobalValue::DLLStorageClassTypes DLLStorage;
 
   static const IRLinkage InternalLinkOnceODR;
+  static const IRLinkage InternalWeakODR;
   static const IRLinkage Internal;
+
+  static const IRLinkage ExternalImport;
+  static const IRLinkage ExternalExport;
 };
 
 class ApplyIRLinkage {
@@ -1031,23 +1055,23 @@ class ApplyIRLinkage {
 public:
   ApplyIRLinkage(IRLinkage IRL) : IRL(IRL) {}
   void to(llvm::GlobalValue *GV) const {
+    llvm::Module *M = GV->getParent();
+    const llvm::Triple Triple(M->getTargetTriple());
+
     GV->setLinkage(IRL.Linkage);
     GV->setVisibility(IRL.Visibility);
-    GV->setDLLStorageClass(IRL.DLLStorage);
+    if (Triple.isOSBinFormatCOFF() && !Triple.isOSCygMing())
+      GV->setDLLStorageClass(IRL.DLLStorage);
+
+    // TODO: BFD and gold do not handle COMDATs properly
+    if (Triple.isOSBinFormatELF())
+      return;
 
     if (IRL.Linkage == llvm::GlobalValue::LinkOnceODRLinkage ||
-        IRL.Linkage == llvm::GlobalValue::WeakODRLinkage) {
-      llvm::Module *M = GV->getParent();
-      const llvm::Triple Triple(M->getTargetTriple());
-
-      // TODO: BFD and gold do not handle COMDATs properly
-      if (Triple.isOSBinFormatELF())
-        return;
-
+        IRL.Linkage == llvm::GlobalValue::WeakODRLinkage)
       if (Triple.supportsCOMDAT())
         if (llvm::GlobalObject *GO = dyn_cast<llvm::GlobalObject>(GV))
           GO->setComdat(M->getOrInsertComdat(GV->getName()));
-    }
   }
 };
 

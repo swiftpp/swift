@@ -82,6 +82,7 @@ namespace swift {
   class AssociatedConformance;
   class AssociatedType;
   class ASTContext;
+  class BaseConformance;
   class BraceStmt;
   class CanType;
   class LinkLibrary;
@@ -92,6 +93,7 @@ namespace swift {
   class ProtocolCompositionType;
   class RootProtocolConformance;
   struct SILDeclRef;
+  class SILDefaultWitnessTable;
   class SILGlobalVariable;
   class SILModule;
   class SILProperty;
@@ -240,14 +242,6 @@ private:
 
   llvm::SetVector<SILFunction*> DynamicReplacements;
 
-  struct FieldTypeMetadata {
-    IRGenModule *IGM;
-    std::vector<CanType> fieldTypes;
-  };
-
-  /// Field types we need to verify are present.
-  llvm::SmallVector<FieldTypeMetadata, 4> LazyFieldTypes;
-
   /// SIL functions that we need to emit lazily.
   llvm::SmallVector<SILFunction*, 4> LazyFunctionDefinitions;
 
@@ -318,11 +312,7 @@ public:
   
   /// Emit functions, variables and tables which are needed anyway, e.g. because
   /// they are externally visible.
-  /// If \p emitForParallelEmission is true ensures that symbols that are
-  /// expressed as relative pointers are collocated in the same output module
-  /// with their base symbol. For example, witness methods need to be collocated
-  /// with the witness table in the same LLVM module.
-  void emitGlobalTopLevel(bool emitForParallelEmission = false);
+  void emitGlobalTopLevel();
 
   /// Emit references to each of the protocol descriptors defined in this
   /// IR module.
@@ -362,8 +352,19 @@ public:
     DefaultIGMForFunction[f] = CurrentIGM;
   }
 
+  void ensureRelativeSymbolCollocation(SILWitnessTable &wt);
+
+  void ensureRelativeSymbolCollocation(SILDefaultWitnessTable &wt);
+
   void noteUseOfTypeMetadata(NominalTypeDecl *type) {
     noteUseOfTypeGlobals(type, true, RequireMetadata);
+  }
+
+  void noteUseOfTypeMetadata(Type type) {
+    type.visit([&](Type t) {
+      if (auto *nominal = t->getAnyNominal())
+        noteUseOfTypeMetadata(nominal);
+    });
   }
 
   void noteUseOfTypeContextDescriptor(NominalTypeDecl *type,
@@ -385,9 +386,6 @@ public:
   /// Adds \p Conf to LazyWitnessTables if it has not been added yet.
   void addLazyWitnessTable(const ProtocolConformance *Conf);
 
-  void addFieldTypes(ArrayRef<CanType> fieldTypes, IRGenModule *IGM) {
-    LazyFieldTypes.push_back({IGM, {fieldTypes.begin(), fieldTypes.end()}});
-  }
 
   void addClassForEagerInitialization(ClassDecl *ClassDecl);
 
@@ -511,14 +509,10 @@ public:
   llvm::IntegerType *Int1Ty;           /// i1
   llvm::IntegerType *Int8Ty;           /// i8
   llvm::IntegerType *Int16Ty;          /// i16
-  union {
-    llvm::IntegerType *Int32Ty;          /// i32
-    llvm::IntegerType *RelativeAddressTy;
-  };
-  union {
-    llvm::PointerType *Int32PtrTy;            /// i32 *
-    llvm::PointerType *RelativeAddressPtrTy;
-  };
+  llvm::IntegerType *Int32Ty;          /// i32
+  llvm::PointerType *Int32PtrTy;       /// i32 *
+  llvm::IntegerType *RelativeAddressTy;
+  llvm::PointerType *RelativeAddressPtrTy;
   llvm::IntegerType *Int64Ty;          /// i64
 
   union {
@@ -542,7 +536,7 @@ public:
     llvm::PointerType *WitnessTablePtrTy;
   };
   llvm::StructType *RefCountedStructTy;/// %swift.refcounted = type { ... }
-  Size RefCountedStructSize;     /// sizeof(%swift.refcounted)
+  Size RefCountedStructSize;           /// sizeof(%swift.refcounted)
   llvm::PointerType *RefCountedPtrTy;  /// %swift.refcounted*
 #define CHECKED_REF_STORAGE(Name, ...) \
   llvm::PointerType *Name##ReferencePtrTy; /// %swift. #name _reference*
@@ -570,11 +564,11 @@ public:
   llvm::PointerType *ProtocolDescriptorPtrTy; /// %swift.protocol*
   llvm::StructType *ProtocolRequirementStructTy; /// %swift.protocol_requirement
   union {
-    llvm::PointerType *ObjCPtrTy;        /// %objc_object*
+    llvm::PointerType *ObjCPtrTy;      /// %objc_object*
     llvm::PointerType *UnknownRefCountedPtrTy;
   };
-  llvm::PointerType *BridgeObjectPtrTy; /// %swift.bridge*
-  llvm::StructType *OpaqueTy;           /// %swift.opaque
+  llvm::PointerType *BridgeObjectPtrTy;/// %swift.bridge*
+  llvm::StructType *OpaqueTy;          /// %swift.opaque
   llvm::PointerType *OpaquePtrTy;      /// %swift.opaque*
   llvm::StructType *ObjCClassStructTy; /// %objc_class
   llvm::PointerType *ObjCClassPtrTy;   /// %objc_class*
@@ -629,7 +623,7 @@ public:
   /// Get the bit width of an integer type for the target platform.
   unsigned getBuiltinIntegerWidth(BuiltinIntegerType *t);
   unsigned getBuiltinIntegerWidth(BuiltinIntegerWidth w);
-  
+
   Size getPointerSize() const { return PtrSize; }
   Alignment getPointerAlignment() const {
     // We always use the pointer's width as its swift ABI alignment.
@@ -703,6 +697,11 @@ public:
 
   llvm::StructType *getIntegerLiteralTy();
 
+  llvm::StructType *getValueWitnessTableTy();
+  llvm::StructType *getEnumValueWitnessTableTy();
+  llvm::PointerType *getValueWitnessTablePtrTy();
+  llvm::PointerType *getEnumValueWitnessTablePtrTy();
+
   void unimplemented(SourceLoc, StringRef Message);
   LLVM_ATTRIBUTE_NORETURN
   void fatal_unimplemented(SourceLoc, StringRef Message);
@@ -733,7 +732,9 @@ private:
   llvm::FunctionType *AssociatedTypeWitnessTableAccessFunctionTy = nullptr;
   llvm::StructType *GenericWitnessTableCacheTy = nullptr;
   llvm::StructType *IntegerLiteralTy = nullptr;
-  
+  llvm::PointerType *ValueWitnessTablePtrTy = nullptr;
+  llvm::PointerType *EnumValueWitnessTablePtrTy = nullptr;
+
   llvm::DenseMap<llvm::Type *, SpareBitVector> SpareBitsForTypes;
   
 //--- Types -----------------------------------------------------------------
@@ -785,6 +786,7 @@ public:
   clang::CodeGen::CodeGenModule &getClangCGM() const;
 
   bool isResilient(NominalTypeDecl *decl, ResilienceExpansion expansion);
+  bool hasResilientMetadata(ClassDecl *decl, ResilienceExpansion expansion);
   ResilienceExpansion getResilienceExpansionForAccess(NominalTypeDecl *decl);
   ResilienceExpansion getResilienceExpansionForLayout(NominalTypeDecl *decl);
   ResilienceExpansion getResilienceExpansionForLayout(SILGlobalVariable *var);
@@ -828,6 +830,7 @@ public:
   llvm::Constant *getAddrOfGlobalUTF16String(StringRef utf8);
   llvm::Constant *getAddrOfObjCSelectorRef(StringRef selector);
   llvm::Constant *getAddrOfObjCSelectorRef(SILDeclRef method);
+  std::string getObjCSelectorName(SILDeclRef method);
   llvm::Constant *getAddrOfObjCMethodName(StringRef methodName);
   llvm::Constant *getAddrOfObjCProtocolRecord(ProtocolDecl *proto,
                                               ForDefinition_t forDefinition);
@@ -842,7 +845,6 @@ public:
   void addUsedGlobal(llvm::GlobalValue *global);
   void addCompilerUsedGlobal(llvm::GlobalValue *global);
   void addObjCClass(llvm::Constant *addr, bool nonlazy);
-  void addFieldTypes(ArrayRef<CanType> fieldTypes);
   void addProtocolConformance(ConformanceDescription &&conformance);
 
   llvm::Constant *emitSwiftProtocols();
@@ -1188,6 +1190,7 @@ public:
                                       ForeignFunctionInfo *foreignInfo=nullptr);
   ForeignFunctionInfo getForeignFunctionInfo(CanSILFunctionType type);
 
+  llvm::Constant *getInt32(uint32_t value);
   llvm::Constant *getSize(Size size);
   llvm::Constant *getAlignment(Alignment align);
   llvm::Constant *getBool(bool condition);
@@ -1296,6 +1299,11 @@ public:
   llvm::GlobalValue *defineAssociatedConformanceDescriptor(
                                               AssociatedConformance conformance,
                                               llvm::Constant *definition);
+  llvm::Constant *getAddrOfBaseConformanceDescriptor(
+                                                 BaseConformance conformance);
+  llvm::GlobalValue *defineBaseConformanceDescriptor(
+                                              BaseConformance conformance,
+                                              llvm::Constant *definition);
 
   llvm::Constant *getAddrOfProtocolDescriptor(ProtocolDecl *D,
                                       ConstantInit definition = ConstantInit());
@@ -1379,8 +1387,6 @@ public:
   void addSwiftErrorAttributes(llvm::AttributeList &attrs, unsigned argIndex);
 
   void emitSharedContextDescriptor(DeclContext *dc);
-
-  void ensureRelativeSymbolCollocation(SILWitnessTable &wt);
 
   llvm::GlobalVariable *
   getGlobalForDynamicallyReplaceableThunk(LinkEntity &entity, llvm::Type *type,

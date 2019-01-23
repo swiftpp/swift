@@ -78,7 +78,8 @@ getIndirectApplyAbstractionPattern(SILGenFunction &SGF,
     // bridged to a foreign type.
     auto bridgedType =
       SGF.SGM.Types.getBridgedFunctionType(pattern, fnType,
-                                           fnType->getExtInfo());
+                                           fnType->getExtInfo(),
+                                           Bridgeability::Full);
     pattern.rewriteType(CanGenericSignature(), bridgedType);
     return pattern;
   }
@@ -1398,14 +1399,21 @@ public:
     // protocols, which only witness initializing initializers.
     else if (auto proto = dyn_cast<ProtocolDecl>(nominal)) {
       useAllocatingCtor = !proto->isObjC();
-    // Similarly, class initializers self.init-delegate to each other via
-    // their allocating entry points, unless delegating to an ObjC-only,
-    // non-factory initializer.
+    // Factory initializers are effectively "allocating" initializers with no
+    // corresponding initializing entry point.
+    } else if (ctorRef->getDecl()->isFactoryInit()) {
+       useAllocatingCtor = true;
+    // If we're emitting a class initializer's non-allocating entry point and
+    // delegating to an initializer exposed to Objective-C, use the initializing
+    // entry point to avoid replacing an existing allocated object.
+    } else if (!SGF.AllocatorMetatype && ctorRef->getDecl()->isObjC()) {
+      useAllocatingCtor = false;
+    // In general, though, class initializers self.init-delegate to each other
+    // via their allocating entry points.
     } else {
       assert(isa<ClassDecl>(nominal)
              && "some new kind of init context we haven't implemented");
-      useAllocatingCtor = ctorRef->getDecl()->isFactoryInit()
-        || !requiresForeignEntryPoint(ctorRef->getDecl());
+      useAllocatingCtor = !requiresForeignEntryPoint(ctorRef->getDecl());
     }
 
     // Load the 'self' argument.
@@ -1473,9 +1481,16 @@ public:
         arg->isSelfExprOf(
             cast<AbstractFunctionDecl>(SGF.FunctionDC->getAsDecl()), false);
 
-    constant =
-        constant.asForeign(!isObjCReplacementSelfCall &&
-                           requiresForeignEntryPoint(ctorRef->getDecl()));
+    if (!isObjCReplacementSelfCall) {
+      if (useAllocatingCtor) {
+        constant =
+            constant.asForeign(requiresForeignEntryPoint(ctorRef->getDecl()));
+      } else {
+        // Note: if we ever implement delegating from one designated initializer
+        // to another, this won't be correct; that should do a direct dispatch.
+        constant = constant.asForeign(ctorRef->getDecl()->isObjC());
+      }
+    }
 
     // Determine the callee. This is normally the allocating
     // entry point, unless we're delegating to an ObjC initializer.
@@ -1486,7 +1501,8 @@ public:
           constant, subs, expr));
     } else if ((useAllocatingCtor || constant.isForeign) &&
                !isSelfCallToReplacedInDynamicReplacement &&
-               getMethodDispatch(ctorRef->getDecl()) == MethodDispatch::Class) {
+               ((constant.isForeign && !useAllocatingCtor) ||
+                getMethodDispatch(ctorRef->getDecl()) == MethodDispatch::Class)) {
       // Dynamic dispatch to the initializer.
       Scope S(SGF, expr);
       setCallee(Callee::forClassMethod(
@@ -5386,22 +5402,21 @@ getMagicFunctionString(SILGenFunction &SGF) {
 }
 
 /// Emit an application of the given allocating initializer.
-static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
-                                             SILLocation loc,
-                                             ConcreteDeclRef init,
-                                             RValue &&args,
-                                             Type overriddenSelfType,
-                                             SGFContext C) {
+RValue SILGenFunction::emitApplyAllocatingInitializer(SILLocation loc,
+                                                      ConcreteDeclRef init,
+                                                      RValue &&args,
+                                                      Type overriddenSelfType,
+                                                      SGFContext C) {
   ConstructorDecl *ctor = cast<ConstructorDecl>(init.getDecl());
 
   // Form the reference to the allocating initializer.
   auto initRef = SILDeclRef(ctor, SILDeclRef::Kind::Allocator)
     .asForeign(requiresForeignEntryPoint(ctor));
-  auto initConstant = SGF.getConstantInfo(initRef);
+  auto initConstant = getConstantInfo(initRef);
   auto subs = init.getSubstitutions();
 
   // Scope any further writeback just within this operation.
-  FormalEvaluationScope writebackScope(SGF);
+  FormalEvaluationScope writebackScope(*this);
 
   // Form the metatype argument.
   ManagedValue selfMetaVal;
@@ -5409,8 +5424,8 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
   {
     // Determine the self metatype type.
     CanSILFunctionType substFnType =
-      initConstant.SILFnType->substGenericArgs(SGF.SGM.M, subs);
-    SILType selfParamMetaTy = SGF.getSILType(substFnType->getSelfParameter());
+      initConstant.SILFnType->substGenericArgs(SGM.M, subs);
+    SILType selfParamMetaTy = getSILType(substFnType->getSelfParameter());
 
     if (overriddenSelfType) {
       // If the 'self' type has been overridden, form a metatype to the
@@ -5420,17 +5435,17 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
                           selfParamMetaTy.castTo<MetatypeType>()
                               ->getRepresentation());
       selfMetaTy =
-        SGF.getLoweredType(overriddenSelfMetaType->getCanonicalType());
+        getLoweredType(overriddenSelfMetaType->getCanonicalType());
     } else {
       selfMetaTy = selfParamMetaTy;
     }
 
     // Form the metatype value.
-    SILValue selfMeta = SGF.B.createMetatype(loc, selfMetaTy);
+    SILValue selfMeta = B.createMetatype(loc, selfMetaTy);
 
     // If the types differ, we need an upcast.
     if (selfMetaTy != selfParamMetaTy)
-      selfMeta = SGF.B.createUpcast(loc, selfMeta, selfParamMetaTy);
+      selfMeta = B.createUpcast(loc, selfMeta, selfParamMetaTy);
 
     selfMetaVal = ManagedValue::forUnmanaged(selfMeta);
   }
@@ -5439,12 +5454,12 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
   Optional<Callee> callee;
   if (isa<ProtocolDecl>(ctor->getDeclContext())) {
     callee.emplace(Callee::forWitnessMethod(
-        SGF, selfMetaVal.getType().getASTType(),
+        *this, selfMetaVal.getType().getASTType(),
         initRef, subs, loc));
   } else if (getMethodDispatch(ctor) == MethodDispatch::Class) {
-    callee.emplace(Callee::forClassMethod(SGF, initRef, subs, loc));
+    callee.emplace(Callee::forClassMethod(*this, initRef, subs, loc));
   } else {
-    callee.emplace(Callee::forDirect(SGF, initRef, subs, loc));
+    callee.emplace(Callee::forDirect(*this, initRef, subs, loc));
   }
 
   auto substFormalType = callee->getSubstFormalType();
@@ -5462,12 +5477,12 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
   }
 
   // Form the call emission.
-  CallEmission emission(SGF, std::move(*callee), std::move(writebackScope));
+  CallEmission emission(*this, std::move(*callee), std::move(writebackScope));
 
   // Self metatype.
   emission.addCallSite(loc,
                        ArgumentSource(loc,
-                                      RValue(SGF, loc,
+                                      RValue(*this, loc,
                                              selfMetaVal.getType()
                                                .getASTType(),
                                              std::move(selfMetaVal))),
@@ -5485,11 +5500,11 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
 
   // If we need a downcast, do it down.
   if (requiresDowncast) {
-    ManagedValue v = std::move(result).getAsSingleValue(SGF, loc);
+    ManagedValue v = std::move(result).getAsSingleValue(*this, loc);
     CanType canOverriddenSelfType = overriddenSelfType->getCanonicalType();
-    SILType loweredResultTy = SGF.getLoweredType(canOverriddenSelfType);
-    v = SGF.B.createUncheckedRefCast(loc, v, loweredResultTy);
-    result = RValue(SGF, loc, canOverriddenSelfType, v);
+    SILType loweredResultTy = getLoweredType(canOverriddenSelfType);
+    v = B.createUncheckedRefCast(loc, v, loweredResultTy);
+    result = RValue(*this, loc, canOverriddenSelfType, v);
   }
 
   return result;
@@ -5557,7 +5572,7 @@ RValue SILGenFunction::emitLiteral(LiteralExpr *literal, SGFContext C) {
   // Call the builtin initializer.
   relabelArgument(builtinInit, builtinLiteralArgs);
   RValue builtinLiteral =
-    emitApplyAllocatingInitializer(*this, literal, builtinInit,
+    emitApplyAllocatingInitializer(literal, builtinInit,
                                    std::move(builtinLiteralArgs),
                                    Type(),
                                    init ? SGFContext() : C);
@@ -5567,7 +5582,7 @@ RValue SILGenFunction::emitLiteral(LiteralExpr *literal, SGFContext C) {
 
   // Otherwise, perform the second initialization step.
   relabelArgument(init, builtinLiteral);
-  RValue result = emitApplyAllocatingInitializer(*this, literal, init,
+  RValue result = emitApplyAllocatingInitializer(literal, init,
                                                  std::move(builtinLiteral),
                                                  literal->getType(), C);
   return result;
@@ -5581,7 +5596,7 @@ SILGenFunction::emitUninitializedArrayAllocation(Type ArrayTy,
                                                  SILValue Length,
                                                  SILLocation Loc) {
   auto &Ctx = getASTContext();
-  auto allocate = Ctx.getAllocateUninitializedArray(nullptr);
+  auto allocate = Ctx.getAllocateUninitializedArray();
 
   // Invoke the intrinsic, which returns a tuple.
   auto subMap = ArrayTy->getContextSubstitutionMap(SGM.M.getSwiftModule(),
@@ -5602,7 +5617,7 @@ SILGenFunction::emitUninitializedArrayAllocation(Type ArrayTy,
 void SILGenFunction::emitUninitializedArrayDeallocation(SILLocation loc,
                                                         SILValue array) {
   auto &Ctx = getASTContext();
-  auto deallocate = Ctx.getDeallocateUninitializedArray(nullptr);
+  auto deallocate = Ctx.getDeallocateUninitializedArray();
 
   CanType arrayTy = array->getType().getASTType();
 

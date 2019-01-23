@@ -23,6 +23,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/Expr.h"
+#include "swift/AST/Identifier.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/SourceLoc.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -143,6 +144,10 @@ protected:
   /// \returns true is locator hasn't been simplified down to expression.
   bool hasComplexLocator() const { return HasComplexLocator; }
 
+  /// \returns A parent expression if sub-expression is contained anywhere
+  /// in the root expression or `nullptr` otherwise.
+  Expr *findParentExpr(Expr *subExpr) const;
+
 private:
   /// Compute anchor expression associated with current diagnostic.
   std::pair<Expr *, bool> computeAnchor() const;
@@ -182,15 +187,8 @@ public:
     if (!expr)
       return;
 
-    auto *anchor = getAnchor();
-    expr->forEachChildExpr([&](Expr *subExpr) -> Expr * {
-      auto *AE = dyn_cast<ApplyExpr>(subExpr);
-      if (!AE || AE->getFn() != anchor)
-        return subExpr;
-
-      Apply = AE;
-      return nullptr;
-    });
+    if (auto *parentExpr = findParentExpr(getAnchor()))
+      Apply = dyn_cast<ApplyExpr>(parentExpr);
   }
 
   unsigned getRequirementIndex() const {
@@ -605,6 +603,75 @@ public:
       : FailureDiagnostic(nullptr, cs, locator) {}
 
   bool diagnoseAsError() override;
+};
+
+/// Diagnose situations when there was an attempt to unwrap entity
+/// of non-optional type e.g.
+///
+/// ```swift
+/// let i: Int = 0
+/// _ = i!
+///
+/// struct A { func foo() {} }
+/// func foo(_ a: A) {
+///   a?.foo()
+/// }
+/// ```
+class NonOptionalUnwrapFailure final : public FailureDiagnostic {
+  Type BaseType;
+
+public:
+  NonOptionalUnwrapFailure(Expr *root, ConstraintSystem &cs, Type baseType,
+                           ConstraintLocator *locator)
+      : FailureDiagnostic(root, cs, locator), BaseType(baseType) {}
+
+  bool diagnoseAsError() override;
+};
+
+class MissingCallFailure final : public FailureDiagnostic {
+public:
+  MissingCallFailure(Expr *root, ConstraintSystem &cs,
+                     ConstraintLocator *locator)
+      : FailureDiagnostic(root, cs, locator) {}
+
+  bool diagnoseAsError() override;
+};
+
+class SubscriptMisuseFailure final : public FailureDiagnostic {
+public:
+  SubscriptMisuseFailure(Expr *root, ConstraintSystem &cs,
+                         ConstraintLocator *locator)
+      : FailureDiagnostic(root, cs, locator) {}
+
+  bool diagnoseAsError() override;
+  bool diagnoseAsNote() override;
+};
+
+/// Diagnose situations when member referenced by name is missing
+/// from the associated base type, e.g.
+///
+/// ```swift
+/// struct S {}
+/// func foo(_ s: S) {
+///   let _: Int = s.foo(1, 2) // expected type is `(Int, Int) -> Int`
+/// }
+/// ```
+class MissingMemberFailure final : public FailureDiagnostic {
+  Type BaseType;
+  DeclName Name;
+
+public:
+  MissingMemberFailure(Expr *root, ConstraintSystem &cs, Type baseType,
+                       DeclName memberName, ConstraintLocator *locator)
+      : FailureDiagnostic(root, cs, locator), BaseType(baseType),
+        Name(memberName) {}
+
+  bool diagnoseAsError() override;
+
+private:
+  static DeclName findCorrectEnumCaseName(Type Ty,
+                                          TypoCorrectionResults &corrections,
+                                          DeclName memberName);
 };
 
 } // end namespace constraints

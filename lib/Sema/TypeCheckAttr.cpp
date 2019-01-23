@@ -87,6 +87,7 @@ public:
   IGNORED_ATTR(FixedLayout)
   IGNORED_ATTR(ForbidSerializingReference)
   IGNORED_ATTR(Frozen)
+  IGNORED_ATTR(HasStorage)
   IGNORED_ATTR(Implements)
   IGNORED_ATTR(ImplicitlyUnwrappedOptional)
   IGNORED_ATTR(Infix)
@@ -294,7 +295,6 @@ public:
   void visitAccessControlAttr(AccessControlAttr *attr);
   void visitSetterAccessAttr(SetterAccessAttr *attr);
   bool visitAbstractAccessControlAttr(AbstractAccessControlAttr *attr);
-  void visitHasStorageAttr(HasStorageAttr *attr);
   void visitObjCMembersAttr(ObjCMembersAttr *attr);
 };
 } // end anonymous namespace
@@ -435,16 +435,6 @@ void AttributeEarlyChecker::visitGKInspectableAttr(GKInspectableAttr *attr) {
   if (!VD->getDeclContext()->getSelfClassDecl() || VD->isStatic())
     diagnoseAndRemoveAttr(attr, diag::invalid_ibinspectable,
                                  attr->getAttrName());
-}
-
-void AttributeEarlyChecker::visitHasStorageAttr(HasStorageAttr *attr) {
-  auto *VD = cast<VarDecl>(D);
-  if (VD->getDeclContext()->getSelfClassDecl())
-    return;
-  auto nominalDecl = VD->getDeclContext()->getSelfNominalTypeDecl();
-  if (nominalDecl && isa<StructDecl>(nominalDecl))
-    return;
-  diagnoseAndRemoveAttr(attr, diag::invalid_decl_attribute_simple);
 }
 
 static Optional<Diag<bool,Type>>
@@ -1627,6 +1617,13 @@ void AttributeChecker::visitAccessControlAttr(AccessControlAttr *attr) {
     }
 
     NominalTypeDecl *nominal = extension->getExtendedNominal();
+
+    // Extension is ill-formed; suppress the attribute.
+    if (!nominal) {
+      attr->setInvalid();
+      return;
+    }
+
     AccessLevel typeAccess = nominal->getFormalAccess();
     if (attr->getAccess() > typeAccess) {
       TC.diagnose(attr->getLocation(), diag::access_control_extension_more,
@@ -2019,6 +2016,16 @@ void AttributeChecker::visitInlinableAttr(InlinableAttr *attr) {
                           access);
     return;
   }
+
+  // @inlinable cannot be applied to deinitializers in resilient classes.
+  if (auto *DD = dyn_cast<DestructorDecl>(D)) {
+    if (auto *CD = dyn_cast<ClassDecl>(DD->getDeclContext())) {
+      if (CD->isResilient()) {
+        diagnoseAndRemoveAttr(attr, diag::inlinable_resilient_deinit);
+        return;
+      }
+    }
+  }
 }
 
 void AttributeChecker::visitOptimizeAttr(OptimizeAttr *attr) {
@@ -2063,8 +2070,9 @@ void lookupReplacedDecl(DeclName replacedDeclName,
                              replacement->getModuleScopeContext(), nullptr,
                              attr->getLocation());
     if (lookup.isSuccess()) {
-      for (auto entry : lookup.Results)
+      for (auto entry : lookup.Results) {
         results.push_back(entry.getValueDecl());
+      }
     }
     return;
   }
@@ -2078,6 +2086,28 @@ void lookupReplacedDecl(DeclName replacedDeclName,
       {typeCtx}, replacedDeclName, NL_QualifiedDefault, results);
 }
 
+/// Remove any argument labels from the interface type of the given value that
+/// are extraneous from the type system's point of view, producing the
+/// type to compare against for the purposes of dynamic replacement.
+static Type getDynamicComparisonType(ValueDecl *value) {
+  unsigned numArgumentLabels = 0;
+
+  if (isa<AbstractFunctionDecl>(value)) {
+    ++numArgumentLabels;
+
+    if (value->getDeclContext()->isTypeContext())
+      ++numArgumentLabels;
+  } else if (isa<SubscriptDecl>(value)) {
+    ++numArgumentLabels;
+  }
+
+  auto interfaceType = value->getInterfaceType();
+  if (!interfaceType)
+    return ErrorType::get(value->getASTContext());
+
+  return interfaceType->removeArgumentLabels(numArgumentLabels);
+}
+
 static FuncDecl *findReplacedAccessor(DeclName replacedVarName,
                                       AccessorDecl *replacement,
                                       DynamicReplacementAttr *attr,
@@ -2087,13 +2117,47 @@ static FuncDecl *findReplacedAccessor(DeclName replacedVarName,
   SmallVector<ValueDecl *, 4> results;
   lookupReplacedDecl(replacedVarName, attr, replacement, results);
 
+  // Filter out any accessors that won't work.
+  if (!results.empty()) {
+    auto replacementStorage = replacement->getStorage();
+    TC.validateDecl(replacementStorage);
+    Type replacementStorageType = getDynamicComparisonType(replacementStorage);
+    results.erase(std::remove_if(results.begin(), results.end(),
+        [&](ValueDecl *result) {
+          // Check for static/instance mismatch.
+          if (result->isStatic() != replacementStorage->isStatic())
+            return true;
+
+          // Check for type mismatch.
+          TC.validateDecl(result);
+          auto resultType = getDynamicComparisonType(result);
+          if (!resultType->isEqual(replacementStorageType)) {
+            return true;
+          }
+
+          return false;
+        }),
+        results.end());
+  }
+
   if (results.empty()) {
     TC.diagnose(attr->getLocation(),
                 diag::dynamic_replacement_accessor_not_found, replacedVarName);
     attr->setInvalid();
     return nullptr;
   }
-  assert(results.size() == 1 && "Should only have on var or fun");
+
+  if (results.size() > 1) {
+    TC.diagnose(attr->getLocation(),
+                diag::dynamic_replacement_accessor_ambiguous, replacedVarName);
+    for (auto result : results) {
+      TC.diagnose(result,
+                  diag::dynamic_replacement_accessor_ambiguous_candidate,
+                  result->getModuleContext()->getFullName());
+    }
+    attr->setInvalid();
+    return nullptr;
+  }
 
   assert(!isa<FuncDecl>(results[0]));
   TC.validateDecl(results[0]);
@@ -2144,6 +2208,10 @@ findReplacedFunction(DeclName replacedFunctionName,
   lookupReplacedDecl(replacedFunctionName, attr, replacement, results);
 
   for (auto *result : results) {
+    // Check for static/instance mismatch.
+    if (result->isStatic() != replacement->isStatic())
+      continue;
+
     TC.validateDecl(result);
     if (result->getInterfaceType()->getCanonicalType()->matches(
             replacement->getInterfaceType()->getCanonicalType(),
@@ -3015,9 +3083,7 @@ void TypeChecker::checkReferenceOwnershipAttr(VarDecl *var,
     }
     break;
   case ReferenceOwnershipOptionality::Allowed:
-    if (!isOptional)
-      break;
-    LLVM_FALLTHROUGH;
+    break;
   case ReferenceOwnershipOptionality::Required:
     if (var->isLet()) {
       diagnose(var->getStartLoc(), diag::invalid_ownership_is_let,

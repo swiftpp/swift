@@ -208,7 +208,7 @@ ValueOwnershipKind::ValueOwnershipKind(SILModule &M, SILType Type,
   // Trivial types can be passed using a variety of conventions. They always
   // have trivial ownership.
   if (Type.isTrivial(M)) {
-    Value = ValueOwnershipKind::Trivial;
+    Value = ValueOwnershipKind::Any;
     return;
   }
 
@@ -216,18 +216,18 @@ ValueOwnershipKind::ValueOwnershipKind(SILModule &M, SILType Type,
   case SILArgumentConvention::Indirect_In:
   case SILArgumentConvention::Indirect_In_Constant:
     Value = SILModuleConventions(M).useLoweredAddresses()
-      ? ValueOwnershipKind::Trivial
+      ? ValueOwnershipKind::Any
       : ValueOwnershipKind::Owned;
     break;
   case SILArgumentConvention::Indirect_In_Guaranteed:
     Value = SILModuleConventions(M).useLoweredAddresses()
-      ? ValueOwnershipKind::Trivial
+      ? ValueOwnershipKind::Any
       : ValueOwnershipKind::Guaranteed;
     break;
   case SILArgumentConvention::Indirect_Inout:
   case SILArgumentConvention::Indirect_InoutAliasable:
   case SILArgumentConvention::Indirect_Out:
-    Value = ValueOwnershipKind::Trivial;
+    Value = ValueOwnershipKind::Any;
     return;
   case SILArgumentConvention::Direct_Owned:
     Value = ValueOwnershipKind::Owned;
@@ -246,8 +246,6 @@ ValueOwnershipKind::ValueOwnershipKind(SILModule &M, SILType Type,
 llvm::raw_ostream &swift::operator<<(llvm::raw_ostream &os,
                                      ValueOwnershipKind Kind) {
   switch (Kind) {
-  case ValueOwnershipKind::Trivial:
-    return os << "trivial";
   case ValueOwnershipKind::Unowned:
     return os << "unowned";
   case ValueOwnershipKind::Owned:
@@ -280,7 +278,6 @@ ValueOwnershipKind::merge(ValueOwnershipKind RHS) const {
 
 ValueOwnershipKind::ValueOwnershipKind(StringRef S) {
   auto Result = llvm::StringSwitch<Optional<ValueOwnershipKind::innerty>>(S)
-                    .Case("trivial", ValueOwnershipKind::Trivial)
                     .Case("unowned", ValueOwnershipKind::Unowned)
                     .Case("owned", ValueOwnershipKind::Owned)
                     .Case("guaranteed", ValueOwnershipKind::Guaranteed)
@@ -295,7 +292,7 @@ ValueOwnershipKind
 ValueOwnershipKind::getProjectedOwnershipKind(SILModule &M,
                                               SILType Proj) const {
   if (Proj.isTrivial(M))
-    return ValueOwnershipKind::Trivial;
+    return ValueOwnershipKind::Any;
   return *this;
 }
 
