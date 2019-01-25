@@ -13,7 +13,6 @@
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "TFConstExpr.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
-#include "swift/SILOptimizer/Utils/ConstExpr.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSema.h"

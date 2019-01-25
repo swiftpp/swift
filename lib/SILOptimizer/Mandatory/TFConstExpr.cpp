@@ -20,6 +20,7 @@
 #include "swift/SIL/FormalLinkage.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILConstants.h"
+#include "swift/SILOptimizer/Utils/Devirtualize.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "llvm/ADT/PointerEmbeddedInt.h"
 #include "llvm/Support/CommandLine.h"
@@ -192,7 +193,7 @@ static void lookupOrLinkWitnessTable(ProtocolConformanceRef confRef,
   auto *decl =
       conf->getDeclContext()->getSelfNominalTypeDecl();
   auto linkage = getSILLinkage(getDeclLinkage(decl), NotForDefinition);
-  auto *newTable = module.createWitnessTableDeclaration(conf, linkage);
+  auto *newTable = SILWitnessTable::create(module, linkage, conf->getRootConformance());
   newTable = module.getSILLoader()->lookupWitnessTable(newTable);
 
   // Update linkage for witness methods.

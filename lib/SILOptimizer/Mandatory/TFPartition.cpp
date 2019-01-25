@@ -2347,7 +2347,7 @@ void PartitionCloner::initBlock(SILBasicBlock *BB) {
     // Create the argument and copy it into the ValueMap so future references
     // use it.
     ValueMap[arg] = newBB->createPhiArgument(
-        remapType(arg->getType()), ValueOwnershipKind::Trivial, arg->getDecl());
+        remapType(arg->getType()), ValueOwnershipKind::Any, arg->getDecl());
   }
 
   // If this is the entry block for our computation, add the parameter BB
@@ -2897,7 +2897,7 @@ static SILValue createHostSend(SILBuilder &B, SILLocation loc, SILValue value,
     // the small amount of code duplication, it is not yet worth unifying.
     auto stackAlloc = B.createAllocStack(loc, value->getType());
 
-    auto storeOwnership = B.getFunction().hasQualifiedOwnership()
+    auto storeOwnership = B.getFunction().hasOwnership()
                               ? StoreOwnershipQualifier::Trivial
                               : StoreOwnershipQualifier::Unqualified;
     B.createStore(loc, value, stackAlloc, storeOwnership);
@@ -3567,7 +3567,7 @@ static SILValue convertScalarToHostTensorHandle(SILValue value, SILBuilder &B,
   // by address on the stack.
   auto stackAlloc = B.createAllocStack(loc, value->getType());
 
-  auto storeOwnership = B.getFunction().hasQualifiedOwnership()
+  auto storeOwnership = B.getFunction().hasOwnership()
                             ? StoreOwnershipQualifier::Trivial
                             : StoreOwnershipQualifier::Unqualified;
   B.createStore(loc, value, stackAlloc, storeOwnership);
@@ -3831,10 +3831,10 @@ void TFFunctionPartition::insertTensorComputationStartEndTerminate(
       *anyTensorHandleClass->getStoredProperties().begin();
 
   // Ownership markers for CTensorHandle accesses.
-  auto loadOwnership = hostFn.hasQualifiedOwnership()
+  auto loadOwnership = hostFn.hasOwnership()
                            ? LoadOwnershipQualifier::Trivial
                            : LoadOwnershipQualifier::Unqualified;
-  auto storeOwnership = hostFn.hasQualifiedOwnership()
+  auto storeOwnership = hostFn.hasOwnership()
                             ? StoreOwnershipQualifier::Trivial
                             : StoreOwnershipQualifier::Unqualified;
 

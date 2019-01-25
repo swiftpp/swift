@@ -2163,9 +2163,9 @@ function(_add_swift_executable_single name)
   # executables to different directories without also copying the "libs"
   # directory. A more robust solution should be found.
   if("${SWIFTEXE_SINGLE_SDK}" STREQUAL "LINUX" AND NOT "${SWIFTEXE_SINGLE_SDK}" STREQUAL "ANDROID")
-    set(local_rpath "$ORIGIN:$ORIGIN/${swift_relative_library_path}:${SWIFTLIB_DIR}/linux:/usr/lib/swift/linux")
+    set(local_rpath "$ORIGIN/../lib:$ORIGIN:$ORIGIN/${swift_relative_library_path}:${SWIFTLIB_DIR}/linux:/usr/lib/swift/linux")
   elseif("${SWIFTEXE_SINGLE_SDK}" STREQUAL "CYGWIN")
-    set(local_rpath "$ORIGIN:$ORIGIN/${swift_relative_library_path}:${SWIFTLIB_DIR}/cygwin:/usr/lib/swift/cygwin")
+    set(local_rpath "$ORIGIN/../lib:$ORIGIN:$ORIGIN/${swift_relative_library_path}:${SWIFTLIB_DIR}/cygwin:/usr/lib/swift/cygwin")
   endif()
   # END SWIFT_ENABLE_TENSORFLOW
 

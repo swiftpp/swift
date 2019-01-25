@@ -214,7 +214,7 @@ static FuncDecl *findAssociativeOperatorDeclInProtocol(DeclName operatorName,
 /// Assuming the buffer is for indirect passing, returns the store ownership
 /// qualifier for creating a `store` instruction into the buffer.
 static StoreOwnershipQualifier getBufferSOQ(Type type, SILFunction &fn) {
-  if (fn.hasQualifiedOwnership())
+  if (fn.hasOwnership())
     return fn.getModule().Types.getTypeLowering(type).isTrivial()
                ? StoreOwnershipQualifier::Trivial
                : StoreOwnershipQualifier::Init;
@@ -224,7 +224,7 @@ static StoreOwnershipQualifier getBufferSOQ(Type type, SILFunction &fn) {
 /// Assuming the buffer is for indirect passing, returns the load ownership
 /// qualified for creating a `load` instruction from the buffer.
 static LoadOwnershipQualifier getBufferLOQ(Type type, SILFunction &fn) {
-  if (fn.hasQualifiedOwnership())
+  if (fn.hasOwnership())
     return fn.getModule().Types.getTypeLowering(type).isTrivial()
                ? LoadOwnershipQualifier::Trivial
                : LoadOwnershipQualifier::Take;
@@ -1626,7 +1626,7 @@ reapplyFunctionConversion(SILValue newFunc, SILValue oldFunc,
         operandFnTy->getExtInfo().withNoEscape());
     auto silTy = SILType::getPrimitiveObjectType(noEscapeType);
     return builder.createConvertEscapeToNoEscape(
-        loc, innerNewFunc, silTy, cetn->isEscapedByUser(),
+        loc, innerNewFunc, silTy,
         cetn->isLifetimeGuaranteed());
   }
   // convert_function
@@ -3890,7 +3890,7 @@ void DifferentiationTask::createEmptyPrimal() {
                                   primalTy, original->isBare(),
                                   IsNotTransparent, original->isSerialized(),
                                   original->isDynamicallyReplaceable());
-  primal->setUnqualifiedOwnership();
+  primal->setOwnershipEliminated();
   if (primalGenericEnv)
     primal->setGenericEnvironment(primalGenericEnv);
   LLVM_DEBUG(getADDebugStream() << "Primal function created \n"
@@ -4021,7 +4021,7 @@ void DifferentiationTask::createEmptyAdjoint() {
                               original->getLocation(), original->isBare(),
                               IsNotTransparent, original->isSerialized(),
                               original->isDynamicallyReplaceable());
-  adjoint->setUnqualifiedOwnership();
+  adjoint->setOwnershipEliminated();
   adjoint->setDebugScope(new (module)
                              SILDebugScope(original->getLocation(), adjoint));
 }
@@ -4057,7 +4057,7 @@ void DifferentiationTask::createJVP() {
                           original->getLocation(), original->isBare(),
                           IsNotTransparent, original->isSerialized(),
                           original->isDynamicallyReplaceable());
-  jvp->setUnqualifiedOwnership();
+  jvp->setOwnershipEliminated();
   jvp->setDebugScope(new (module) SILDebugScope(original->getLocation(), jvp));
   attr->setJVPName(jvpName);
 
@@ -4115,7 +4115,7 @@ void DifferentiationTask::createVJP() {
                           original->getLocation(), original->isBare(),
                           IsNotTransparent, original->isSerialized(),
                           original->isDynamicallyReplaceable());
-  vjp->setUnqualifiedOwnership();
+  vjp->setOwnershipEliminated();
   vjp->setDebugScope(new (module)
                          SILDebugScope(original->getLocation(), vjp));
   attr->setVJPName(vjpName);

@@ -82,7 +82,7 @@ static TypeAliasDecl *getParameterTypeAliasDecl(NominalTypeDecl *nominal) {
   return parameterDecl;
 }
 
-static void deriveBodyParameterGroup_update(AbstractFunctionDecl *funcDecl) {
+static void deriveBodyParameterGroup_update(AbstractFunctionDecl *funcDecl, void*) {
   auto *nominal = funcDecl->getDeclContext()->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
@@ -199,7 +199,7 @@ static ValueDecl *deriveParameterGroup_update(DerivedConformance &derived) {
       TypeLoc::withoutLoc(TupleType::getEmpty(C)), nominal);
   updateDecl->setImplicit();
   updateDecl->setSelfAccessKind(SelfAccessKind::Mutating);
-  updateDecl->setBodySynthesizer(deriveBodyParameterGroup_update);
+  updateDecl->setBodySynthesizer(deriveBodyParameterGroup_update, nullptr);
 
   if (auto env = parentDC->getGenericEnvironmentOfContext())
     updateDecl->setGenericEnvironment(env);

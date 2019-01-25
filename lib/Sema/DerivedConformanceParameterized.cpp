@@ -129,7 +129,7 @@ static ValueDecl *getProtocolRequirement(ProtocolDecl *proto, Identifier name) {
   return lookup[0];
 }
 
-static void derivedBody_allParametersGetter(AbstractFunctionDecl *getterDecl) {
+static void derivedBody_allParametersGetter(AbstractFunctionDecl *getterDecl, void*) {
   auto *nominal = getterDecl->getDeclContext()->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
@@ -204,7 +204,7 @@ static void derivedBody_allParametersGetter(AbstractFunctionDecl *getterDecl) {
       BraceStmt::create(C, SourceLoc(), returnStmt, SourceLoc(), true));
 }
 
-static void derivedBody_allParametersSetter(AbstractFunctionDecl *setterDecl) {
+static void derivedBody_allParametersSetter(AbstractFunctionDecl *setterDecl, void*) {
   auto *nominal = setterDecl->getDeclContext()->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
@@ -315,7 +315,7 @@ deriveParameterized_allParameters(DerivedConformance &derived) {
   derived.addMembersToConformanceContext(
       {getterDecl, setterDecl, allParamsDecl, pbDecl});
 
-  addExpectedOpaqueAccessorsToStorage(TC, C);
+  addExpectedOpaqueAccessorsToStorage(allParamsDecl, C);
   triggerAccessorSynthesis(TC, allParamsDecl);
 
   return allParamsDecl;

@@ -109,7 +109,7 @@ public func testSendsInABranch(_ c: Bool) {
 // CHECK:  op: "If"
 
 public func testSendsInALoopCPU() {
-  let maxCount = 10
+  let maxCount = 100000
   var count = 1
   var a = Tensor<Float>(1.0)
   while count < maxCount {
@@ -129,7 +129,7 @@ public func testSendsInALoopCPU() {
 
 public func testSendsInALoopGPU() {
   TensorFlow.enableGPU()
-  let maxCount = 10
+  let maxCount = 100000
   // a cannot be an integer tensor due to a TensorFlow Eigen bug (b/77737504).
   var a = Tensor<Float>(1)
   var count = 1
@@ -160,7 +160,7 @@ public func testSendsInALoopGPU() {
 
 public func testSendsInALoopTPU() {
   TensorFlow.enableTPU()
-  let maxCount = 10
+  let maxCount = 100000
   // a cannot be an integer tensor due to a TensorFlow Eigen bug (b/77737504).
   var a = Tensor<Float>(1)
   var count = 1
@@ -187,7 +187,7 @@ public func testSendsInALoopTPU() {
 // CHECK:   graph_op "tfc.D2DTensorSend
 
 public func testSendsInALoopWithNoResultTensor() {
-  let maxCount = 10
+  let maxCount = 100000
   var count = 1
   var a = Tensor<Float>(1.0)
   while count < maxCount {
@@ -380,7 +380,7 @@ public func test1RecvTensorGPU_WithShapes() {
 }
 
 public func testRecvsInALoop() {
-  let maxCount = 10
+  let maxCount = 10000
   var count = 1
   var a = Tensor<Float>(1.0)
   while count < maxCount {

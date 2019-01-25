@@ -86,7 +86,7 @@ public func testSharedRegionWithLoop(_ count : Int32) -> Tensor<Int32> {
     }
   } catch {
     var i: Int32 = 0
-    while i < 2 {
+    while i < 100 {
       result += 5
       i += 1
     }
@@ -98,12 +98,12 @@ SESERegionTests.testAllBackends("testSharedRegionWithLoop") {
   expectEqualWithScalarTensor(1, testSharedRegionWithLoop(99))
 #if !CUDA
   // TODO fix.
-  expectEqualWithScalarTensor(12, testSharedRegionWithLoop(101))
+  expectEqualWithScalarTensor(502, testSharedRegionWithLoop(101))
 #endif  // !CUDA
   expectEqualWithScalarTensor(3, testSharedRegionWithLoop(-99))
 #if !CUDA
   // TODO fix.
-  expectEqualWithScalarTensor(14, testSharedRegionWithLoop(-101))
+  expectEqualWithScalarTensor(504, testSharedRegionWithLoop(-101))
 #endif  // !CUDA
 }
 

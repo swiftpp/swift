@@ -1361,7 +1361,7 @@ namespace {
     }
 
     // SWIFT_ENABLE_TENSORFLOW
-    const TypeLowering *
+    TypeLowering *
     visitDifferentiableSILFunctionType(CanSILFunctionType type) {
       assert(type->isDifferentiable());
       auto props = getDifferentiableSILFunctionTypeRecursiveProperties(type);

@@ -50,7 +50,7 @@ bool checkOverrides(ValueDecl *decl);
 
 // SWIFT_ENABLE_TENSORFLOW
 // Made public so that DerivedConformanceParameterized can call it.
-void addExpectedOpaqueAccessorsToStorage(TypeChecker &TC,
+void addExpectedOpaqueAccessorsToStorage(AbstractStorageDecl *storage,
                                          ASTContext &ctx);
 
 // These are implemented in CodeSynthesis.cpp.

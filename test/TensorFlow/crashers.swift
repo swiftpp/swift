@@ -241,7 +241,7 @@ public func SR8191() {
     let y = t + t
     _hostOp(y)
     i += 1
-  } while i < 10
+  } while i < 10000
 }
 
 // CHECK-LABEL: --- XLA CFG Canonicalize: {{.*}}SR8191{{.*}}

@@ -2552,7 +2552,7 @@ GraphOperationInst::create(SILModule &M, SILDebugLocation loc, Identifier name,
   llvm::SmallVector<ValueOwnershipKind, 4> resultOwnerships;
   for (auto resultType : resultTypes) {
     auto ownership = resultType.isTrivial(M)
-      ? ValueOwnershipKind::Trivial : ValueOwnershipKind::Owned;
+      ? ValueOwnershipKind::Any : ValueOwnershipKind::Owned;
     resultOwnerships.push_back(ownership);
   }
 

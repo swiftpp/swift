@@ -38,7 +38,7 @@ func someLocalFunctionThatShouldBeForceInlined() {
 //someLocalFunctionThatShouldBeForceInlined()
 
 // CHECK-LABEL: --- TFPartition Accelerator Result: main
-// CHECK: sil private @main.tf : $@callee_owned ()
+// CHECK: sil private [ossa] @main.tf : $@callee_owned ()
 // CHECK:   graph_op "Const"
 // CHECK:   graph_op "Add
 // CHECK:   graph_op "Sub

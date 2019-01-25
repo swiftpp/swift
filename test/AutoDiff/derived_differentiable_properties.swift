@@ -7,8 +7,8 @@ public struct Foo : Differentiable {
 }
 
 // CHECK-AST-LABEL: @_fieldwiseDifferentiable public struct Foo : Differentiable {
-// CHECK-AST:   @_hasStorage @differentiable(wrt: (self))
-// CHECK-AST:   public var a: Float { get set }
+// CHECK-AST:   @differentiable(wrt: (self))
+// CHECK-AST:   @_hasStorage public var a: Float { get set }
 // CHECK-AST:   @_fieldwiseDifferentiable struct AllDifferentiableVariables
 // CHECK-AST:     typealias AllDifferentiableVariables = Foo.AllDifferentiableVariables
 // CHECK-AST:     typealias TangentVector = Foo.AllDifferentiableVariables
@@ -17,7 +17,7 @@ public struct Foo : Differentiable {
 // CHECK-AST:   typealias CotangentVector = Foo.AllDifferentiableVariables
 
 // CHECK-SILGEN-LABEL: // Foo.a.getter
-// CHECK-SILGEN: sil [transparent] [serialized] [differentiable source 0 wrt 0] @$s33derived_differentiable_properties3FooV1aSfvg : $@convention(method) (Foo) -> Float
+// CHECK-SILGEN: sil [transparent] [serialized] [differentiable source 0 wrt 0] [ossa] @$s33derived_differentiable_properties3FooV1aSfvg : $@convention(method) (Foo) -> Float
 
 struct AdditiveTangentIsSelf : AdditiveArithmetic, Differentiable {
   var a: Float
@@ -39,7 +39,7 @@ struct TestNoDerivative : Differentiable {
 
 // CHECK-AST-LABEL: @_fieldwiseDifferentiable struct TestNoDerivative : Differentiable {
 // CHECK-AST:         @_hasStorage var w: Float { get set }
-// CHECK-AST:         @_hasStorage @noDerivative var technicallyDifferentiable: Float { get set }
+// CHECK-AST:         @noDerivative @_hasStorage var technicallyDifferentiable: Float { get set }
 // CHECK-AST:         @_fieldwiseDifferentiable struct AllDifferentiableVariables : Differentiable, AdditiveArithmetic, VectorNumeric
 // CHECK-AST:           typealias AllDifferentiableVariables = TestNoDerivative.AllDifferentiableVariables
 // CHECK-AST:           typealias TangentVector = TestNoDerivative.AllDifferentiableVariables
@@ -54,7 +54,7 @@ struct TestKeyPathIterable : Differentiable, KeyPathIterable {
 
 // CHECK-AST-LABEL: @_fieldwiseDifferentiable struct TestKeyPathIterable : Differentiable, KeyPathIterable {
 // CHECK-AST:         @_hasStorage var w: Float { get set }
-// CHECK-AST:         @_hasStorage @noDerivative var technicallyDifferentiable: Float { get set }
+// CHECK-AST:         @noDerivative @_hasStorage var technicallyDifferentiable: Float { get set }
 // CHECK-AST:         @_fieldwiseDifferentiable struct AllDifferentiableVariables : Differentiable, AdditiveArithmetic, KeyPathIterable, VectorNumeric
 // CHECK-AST:           typealias AllDifferentiableVariables = TestKeyPathIterable.AllDifferentiableVariables
 // CHECK-AST:           typealias TangentVector = TestKeyPathIterable.AllDifferentiableVariables

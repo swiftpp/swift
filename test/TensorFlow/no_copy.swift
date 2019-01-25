@@ -22,7 +22,7 @@ public func testSelect(conds1: Tensor<Bool>, x1: Tensor<Float>, y1: Tensor<Float
 }
 /*
  CHECK-LABEL: --- TFPartition Accelerator Result: {{.*}}testSelect
- CHECK: sil private @{{.*}}testSelect{{.*}} : $@callee_owned (TensorHandle<Float>, TensorHandle<Bool>, TensorHandle<Float>) -> TensorHandle<Float> {
+ CHECK: sil private [ossa] @{{.*}}testSelect{{.*}} : $@callee_owned (TensorHandle<Float>, TensorHandle<Bool>, TensorHandle<Float>) -> TensorHandle<Float> {
  CHECK: bb0(%0 : @unowned $TensorHandle<Float>, %1 : @unowned $TensorHandle<Bool>, %2 : @unowned $TensorHandle<Float>):
  CHECK:       [[A:%.*]] = graph_op "Add"(%0 : $TensorHandle<Float>, %0 : $TensorHandle<Float>
  CHECK:       [[B:%.*]] = graph_op "Select"(%1 : $TensorHandle<Bool>, [[A]] : $TensorHandle<Float>, %2 : $TensorHandle<Float>
@@ -37,7 +37,7 @@ public func testEmptyScalarsArray() {
 }
 /*
  CHECK-LABEL: --- TFPartition Accelerator Result: {{.*}}testEmptyScalarsArray
- CHECK: sil private @{{.*}}testEmptyScalarsArray{{.*}} : $@callee_owned () -> () {
+ CHECK: sil private [ossa] @{{.*}}testEmptyScalarsArray{{.*}} : $@callee_owned () -> () {
  CHECK: bb0:
  CHECK: graph_op "Const"() {dtype$dtype: i32 3, value$tensor: [$Int32: ], shape$shape: [$Int32: (i32 0), (i32 20), (i32 30)],
  CHECK: graph_op "Add"({{.*}} : $TensorHandle<Int32>, {{.*}} : $TensorHandle<Int32>
@@ -50,7 +50,7 @@ public func testConvolution(x: Tensor<Float>, filter: Tensor<Float>) -> Tensor<F
 }
 
 // CHECK-LABEL: --- TFPartition Accelerator Result: {{.*}}testConvolution
-// CHECK: sil private @{{.*}}testConvolution{{.*}} : $@callee_owned (TensorHandle<Float>, TensorHandle<Float>) -> TensorHandle<Float> {
+// CHECK: sil private [ossa] @{{.*}}testConvolution{{.*}} : $@callee_owned (TensorHandle<Float>, TensorHandle<Float>) -> TensorHandle<Float> {
 // CHECK: bb0(%0 : @unowned $TensorHandle<Float>, %1 : @unowned $TensorHandle<Float>):
 // CHECK: [[A:%.*]] = graph_op "Conv2D"(%0 : $TensorHandle<Float>, %1 : $TensorHandle<Float>) {T$dtype: i32 1, strides: [$Int32: (i32 1), (i32 2), (i32 3), (i32 4)], use_cudnn_on_gpu: i1 -1, padding: "SAME", data_format: "NHWC", dilations: [$Int32: (i32 1), (i32 1), (i32 1), (i32 1)], __device: "/job:localhost/replica:0/task:0/device:CPU:0"} : $TensorHandle<Float>
 // CHECK-NEXT:  return [[A]] : $TensorHandle<Float>

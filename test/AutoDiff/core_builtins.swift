@@ -9,7 +9,7 @@ func evaldiff<T: Differentiable, U: Differentiable>(_ f: @autodiff (T) -> U, _ x
 }
 
 // CHECK-SIL-LABEL: @{{.*}}evaldiff{{.*}}
-// CHECK-SIL: bb0([[ORIG_RES_BUF:%.*]] : @trivial $*U, [[ORIG_FN:%.*]] : @trivial $@autodiff @noescape @callee_guaranteed (@in_guaranteed T) -> @out U, [[ORIG_FN_ARG:%.*]] : @trivial $*T):
+// CHECK-SIL: bb0([[ORIG_RES_BUF:%.*]] : $*U, [[ORIG_FN:%.*]] : $@autodiff @noescape @callee_guaranteed (@in_guaranteed T) -> @out U, [[ORIG_FN_ARG:%.*]] : $*T):
 // CHECK-SIL:   [[ORIG_FN_ARG_COPY:%.*]] = alloc_stack $T
 // CHECK-SIL:   copy_addr [[ORIG_FN_ARG]] to [initialization] [[ORIG_FN_ARG_COPY]] : $*T
 // CHECK-SIL:   [[JVP_FN:%.*]] = autodiff_function_extract [jvp] [order 1] [[ORIG_FN]] : $@autodiff @noescape @callee_guaranteed (@in_guaranteed T) -> @out U
@@ -33,7 +33,7 @@ func evaldiff2<T: Differentiable, U: Differentiable, V: Differentiable>(_ f: @au
 }
 
 // CHECK-LABEL: @{{.*}}evaldiff2{{.*}}
-// CHECK: bb0({{.*}} : @trivial $*V, [[DIFFED:%.*]] : @trivial $@autodiff @noescape @callee_guaranteed (@in_guaranteed T, @in_guaranteed U) -> @out V, {{.*}} : @trivial $*T, {{.*}} : @trivial $*U):
+// CHECK: bb0({{.*}} : $*V, [[DIFFED:%.*]] : $@autodiff @noescape @callee_guaranteed (@in_guaranteed T, @in_guaranteed U) -> @out V, {{.*}} : $*T, {{.*}} : $*U):
 // CHECK:   autodiff_function_extract [jvp] [order 1] [[DIFFED]] : $@autodiff @noescape @callee_guaranteed (@in_guaranteed T, @in_guaranteed U) -> @out V // user: %14
 
 func methoddiff<T: Differentiable, U: Differentiable, R: Differentiable>(_ f: @autodiff (T) -> (U) -> R, _ x: T, _ y: U)
@@ -43,7 +43,7 @@ func methoddiff<T: Differentiable, U: Differentiable, R: Differentiable>(_ f: @a
 }
 
 // CHECK-SIL-LABEL: @{{.*}}methoddiff{{.*}}
-// CHECK-SIL: bb0([[ORIG_RES_BUF:%.*]] : @trivial $*R, [[ORIG_FN:%.*]] : @trivial $@autodiff @noescape @callee_guaranteed (@in_guaranteed T) -> @owned @callee_guaranteed (@in_guaranteed U) -> @out R, [[ORIG_FN_ARG1:%.*]] : @trivial $*T, [[ORIG_FN_ARG2:%.*]] : @trivial $*U):
+// CHECK-SIL: bb0([[ORIG_RES_BUF:%.*]] : $*R, [[ORIG_FN:%.*]] : $@autodiff @noescape @callee_guaranteed (@in_guaranteed T) -> @owned @callee_guaranteed (@in_guaranteed U) -> @out R, [[ORIG_FN_ARG1:%.*]] : $*T, [[ORIG_FN_ARG2:%.*]] : $*U):
 // CHECK-SIL:   [[ORIG_FN_ARG1_COPY:%.*]] = alloc_stack $T
 // CHECK-SIL:   copy_addr [[ORIG_FN_ARG1]] to [initialization] [[ORIG_FN_ARG1_COPY]] : $*T
 // CHECK-SIL:   [[ORIG_FN_ARG2_COPY:%.*]] = alloc_stack $U

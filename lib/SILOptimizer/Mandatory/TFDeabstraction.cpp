@@ -26,6 +26,7 @@
 #define DEBUG_TYPE "tf-deabstraction"
 #include "TFConstExpr.h"
 #include "TFUtilities.h"
+#include "TFCanonicalizeCFG.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Module.h"
 #include "swift/SIL/GraphOperationBuilder.h"
@@ -478,7 +479,7 @@ static GraphOperationInst *simplifyOperands(GraphOperationInst *origInst,
 
     // If this is an address argument, emit a load of the value.
     if (isLoadableAddressType(argumentValue->getType())) {
-      bool hasOwnership = origInst->getFunction()->hasQualifiedOwnership();
+      bool hasOwnership = origInst->getFunction()->hasOwnership();
       auto loadOwnership = hasOwnership ? LoadOwnershipQualifier::Trivial
                                         : LoadOwnershipQualifier::Unqualified;
       auto load = B.createLoad(origInst->getLoc(), argumentValue, loadOwnership);
@@ -510,7 +511,7 @@ static GraphOperationInst *simplifyOperands(GraphOperationInst *origInst,
                               {outParameterAddress->getType().getObjectType()});
 
     // Store the new instruction's result to the outParameterAddress.
-    auto hasOwnership = newInst->getFunction()->hasQualifiedOwnership();
+    auto hasOwnership = newInst->getFunction()->hasOwnership();
     auto storeOwnership = hasOwnership ? StoreOwnershipQualifier::Trivial
                                        : StoreOwnershipQualifier::Unqualified;
     B.createStore(origInst->getLoc(), newInst->getResult(0),
@@ -1849,7 +1850,7 @@ transformTensorFromScalar(ApplyInst *apply,
   // convert to tfc.scalarToTensor.
   auto loc = getUserSourceLocation(apply);
   // Create a load inst to convert a scalar type like Float* to Float.
-  auto hasOwnership = apply->getFunction()->hasQualifiedOwnership();
+  auto hasOwnership = apply->getFunction()->hasOwnership();
   auto loadOwnership = hasOwnership ? LoadOwnershipQualifier::Trivial
                                     : LoadOwnershipQualifier::Unqualified;
   auto *loadScalar = B.createLoad(loc, scalarOperandAddr, loadOwnership);
@@ -2561,6 +2562,8 @@ void TFDeabstraction::doIt() {
   promoteToSSA(stackAllocs);
 
   logCurrentState("After promoteToSSA", /*detailed*/true);
+
+  contractUncondBranches(&fn, /*DI*/nullptr, /*LI*/ nullptr);
 
   // Now that we've promoted all the allocations in the way of our dataflow,
   // go through and propagate any tuple/struct values that are in the way of

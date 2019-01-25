@@ -1074,7 +1074,7 @@ SingleExitLoopTransformer::createNewHeader() {
   // A boolean corresponding to the stayInLoop flag.
   newHeader->createPhiArgument(convertElementTypeToTensorValueType(
                                    SILType::getBuiltinIntegerType(1, context)),
-                               ValueOwnershipKind::Trivial);
+                               ValueOwnershipKind::Any);
   return std::make_pair(newHeader, exitIndexArg);
 }
 

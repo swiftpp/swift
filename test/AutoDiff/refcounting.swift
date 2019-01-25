@@ -34,7 +34,7 @@ _ = pullback(at: Vector.zero, in: testOwnedVector)
 
 // CHECK-VJP-LABEL: struct {{.*}}testOwnedVector{{.*}}__Type__src_0_wrt_0 {
 // CHECK-VJP-NEXT:   @_hasStorage @usableFromInline
-// CHECK-VJP-NEXT:   var pullback_0: (Vector) -> (Vector, Vector)
+// CHECK-VJP-NEXT:   var pullback_0: (Vector) -> (Vector, Vector) { get set }
 // CHECK-VJP-NEXT: }
 
 // The primal should not release primal values.

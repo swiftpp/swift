@@ -276,19 +276,19 @@ static void deriveBodyMathOperator(AbstractFunctionDecl *funcDecl,
 }
 
 // Synthesize body for `AdditiveArithmetic.+` operator.
-static void deriveBodyAdditiveArithmetic_add(AbstractFunctionDecl *funcDecl) {
+static void deriveBodyAdditiveArithmetic_add(AbstractFunctionDecl *funcDecl, void*) {
   deriveBodyMathOperator(funcDecl, Add);
 }
 
 // Synthesize body for `AdditiveArithmetic.-` operator.
 static void
-deriveBodyAdditiveArithmetic_subtract(AbstractFunctionDecl *funcDecl) {
+deriveBodyAdditiveArithmetic_subtract(AbstractFunctionDecl *funcDecl, void*) {
   deriveBodyMathOperator(funcDecl, Subtract);
 }
 
 // Synthesize body for `VectorNumeric.*` operator.
 static void
-deriveBodyVectorNumeric_scalarMultiply(AbstractFunctionDecl *funcDecl) {
+deriveBodyVectorNumeric_scalarMultiply(AbstractFunctionDecl *funcDecl, void*) {
   deriveBodyMathOperator(funcDecl, ScalarMultiply);
 }
 
@@ -361,7 +361,7 @@ static ValueDecl *deriveMathOperator(DerivedConformance &derived,
 }
 
 // Synthesize body for the `AdditiveArithmetic.zero` computed property getter.
-static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl) {
+static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl, void*) {
   auto *nominal = funcDecl->getDeclContext()->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
