@@ -223,6 +223,10 @@ doCodeCompletion(SourceFile &SF, StringRef EnteredCode, unsigned *BufferID,
   // Now we are done with code completion.  Remove the declarations we
   // temporarily inserted.
   SF.Decls.resize(OriginalDeclCount);
+
+  // Reset the error state because it's only relevant to the code that we just
+  // processed, which now gets thrown away.
+  Ctx.Diags.resetHadAnyError();
 }
 
 void REPLCompletions::populate(SourceFile &SF, StringRef EnteredCode) {
