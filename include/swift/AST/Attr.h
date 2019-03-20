@@ -70,21 +70,21 @@ public:
   Optional<UUID> OpenedID;
 
   TypeAttributes() {}
-  
+
   bool isValid() const { return AtLoc.isValid(); }
-  
+
   void clearAttribute(TypeAttrKind A) {
     AttrLocs[A] = SourceLoc();
   }
-  
+
   bool has(TypeAttrKind A) const {
     return getLoc(A).isValid();
   }
-  
+
   SourceLoc getLoc(TypeAttrKind A) const {
     return AttrLocs[A];
   }
-  
+
   void setAttr(TypeAttrKind A, SourceLoc L) {
     assert(!L.isInvalid() && "Cannot clear attribute with this method");
     AttrLocs[A] = L;
@@ -105,10 +105,10 @@ public:
     for (SourceLoc elt : AttrLocs)
       if (elt.isValid())
         return false;
-    
+
     return true;
   }
-  
+
   bool hasConvention() const { return convention.hasValue(); }
   StringRef getConvention() const { return *convention; }
 
@@ -121,7 +121,7 @@ public:
 #include "swift/AST/ReferenceStorage.def"
     return ReferenceOwnership::Strong;
   }
-  
+
   void clearOwnership() {
 #define REF_STORAGE(Name, name, ...) \
     clearAttribute(TAK_sil_##name);
@@ -335,7 +335,7 @@ public:
 
     /// True if this shouldn't be serialized.
     NotSerialized = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 4),
-    
+
     /// True if this attribute is only valid when parsing a .sil file.
     SILOnly = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 5),
 
@@ -559,7 +559,7 @@ public:
   }
 
   unsigned getValue() const { return Bits.AlignmentAttr.Value; }
-  
+
   static bool classof(const DeclAttribute *DA) {
     return DA->getKind() == DAK_Alignment;
   }
@@ -582,10 +582,10 @@ public:
                                  bool Implicit)
     : DeclAttribute(DAK_SwiftNativeObjCRuntimeBase, AtLoc, Range, Implicit),
       BaseClassName(BaseClassName) {}
-  
+
   // The base class's name.
   const Identifier BaseClassName;
-  
+
   static bool classof(const DeclAttribute *DA) {
     return DA->getKind() == DAK_SwiftNativeObjCRuntimeBase;
   }
@@ -813,7 +813,7 @@ public:
                           bool implicitName);
 
   /// Create an unnamed Objective-C attribute, i.e., @objc.
-  static ObjCAttr *createUnnamed(ASTContext &Ctx, SourceLoc AtLoc, 
+  static ObjCAttr *createUnnamed(ASTContext &Ctx, SourceLoc AtLoc,
                                  SourceLoc ObjCLoc);
 
   static ObjCAttr *createUnnamedImplicit(ASTContext &Ctx);
@@ -824,8 +824,8 @@ public:
   /// Note that a nullary Objective-C attribute may represent either a
   /// selector for a zero-parameter function or some other Objective-C
   /// entity, such as a class or protocol.
-  static ObjCAttr *createNullary(ASTContext &Ctx, SourceLoc AtLoc, 
-                                 SourceLoc ObjCLoc, SourceLoc LParenLoc, 
+  static ObjCAttr *createNullary(ASTContext &Ctx, SourceLoc AtLoc,
+                                 SourceLoc ObjCLoc, SourceLoc LParenLoc,
                                  SourceLoc NameLoc, Identifier Name,
                                  SourceLoc RParenLoc);
 
@@ -835,13 +835,13 @@ public:
   /// Note that a nullary Objective-C attribute may represent either a
   /// selector for a zero-parameter function or some other Objective-C
   /// entity, such as a class or protocol.
-  static ObjCAttr *createNullary(ASTContext &Ctx, Identifier Name, 
+  static ObjCAttr *createNullary(ASTContext &Ctx, Identifier Name,
                                  bool isNameImplicit);
 
   /// Create a "selector" Objective-C attribute, which has some number
   /// of identifiers followed by colons.
-  static ObjCAttr *createSelector(ASTContext &Ctx, SourceLoc AtLoc, 
-                                  SourceLoc ObjCLoc, SourceLoc LParenLoc, 
+  static ObjCAttr *createSelector(ASTContext &Ctx, SourceLoc AtLoc,
+                                  SourceLoc ObjCLoc, SourceLoc LParenLoc,
                                   ArrayRef<SourceLoc> NameLocs,
                                   ArrayRef<Identifier> Names,
                                   SourceLoc RParenLoc);
@@ -1411,26 +1411,23 @@ public:
   }
 };
 
-/// SWIFT_ENABLE_TENSORFLOW
-/// Attribute that marks a function differentiable and optionally specifies
-/// custom associated autodiff functions: 'jvp' and 'vjp'.
+// SWIFT_ENABLE_TENSORFLOW
+struct DeclNameWithLoc {
+  DeclName Name;
+  DeclNameLoc Loc;
+};
+
+// SWIFT_ENABLE_TENSORFLOW
+/// Attribute that marks a function as differentiable and optionally specifies
+/// custom associated derivative functions: 'jvp' and 'vjp'.
 ///
-/// Note: 'jvp' and 'vjp' are not fully supported yet. In particular, the core
-/// AD pass does not use them. We are incrementally adding support for them.
-///
-/// For example:
+/// Examples:
 ///   @differentiable(jvp: jvpFoo where T : FloatingPoint)
 ///   @differentiable(wrt: (self, .0, .1), jvp: jvpFoo)
 class DifferentiableAttr final
     : public DeclAttribute,
       private llvm::TrailingObjects<DifferentiableAttr,
                                     ParsedAutoDiffParameter> {
-public:
-  struct DeclNameWithLoc {
-    DeclName Name;
-    DeclNameLoc Loc;
-  };
-private:
   friend TrailingObjects;
 
   /// The number of parameters specified in 'wrt:'.
@@ -1518,8 +1515,45 @@ public:
   FuncDecl *getVJPFunction() const { return VJPFunction; }
   void setVJPFunction(FuncDecl *decl) { VJPFunction = decl; }
 
+  bool parametersMatch(const DifferentiableAttr &other) const {
+    assert(ParameterIndices && other.ParameterIndices);
+    return ParameterIndices->parameters == other.ParameterIndices->parameters;
+  }
+
   static bool classof(const DeclAttribute *DA) {
     return DA->getKind() == DAK_Differentiable;
+  }
+};
+
+// SWIFT_ENABLE_TENSORFLOW
+/// Attribute that registers a function as a derivative of another function.
+///
+/// Examples:
+///   @differentiating(sin(_:_:))
+///   @differentiating(+)
+class DifferentiatingAttr final : public DeclAttribute {
+private:
+  /// The original function name.
+  DeclNameWithLoc Original;
+  /// The original function, resolved by the type checker.
+  FuncDecl *OriginalFunction = nullptr;
+
+  explicit DifferentiatingAttr(ASTContext &context, bool implicit,
+                               SourceLoc atLoc, SourceRange baseRange,
+                               DeclNameWithLoc original);
+
+public:
+  static DifferentiatingAttr *create(ASTContext &context, bool implicit,
+                                     SourceLoc atLoc, SourceRange baseRange,
+                                     DeclNameWithLoc original);
+
+  DeclNameWithLoc getOriginal() const { return Original; }
+
+  FuncDecl *getOriginalFunction() const { return OriginalFunction; }
+  void setOriginalFunction(FuncDecl *decl) { OriginalFunction = decl; }
+
+  static bool classof(const DeclAttribute *DA) {
+    return DA->getKind() == DAK_Differentiating;
   }
 };
 

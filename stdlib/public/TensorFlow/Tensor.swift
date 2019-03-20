@@ -23,6 +23,8 @@ import Glibc
 #endif
 import CTensorFlow
 
+infix operator .== : ComparisonPrecedence
+
 //===----------------------------------------------------------------------===//
 // Tensor
 //===----------------------------------------------------------------------===//
@@ -212,10 +214,20 @@ public extension Tensor where Scalar : Numeric {
 public extension Tensor {
   /// Creates a tensor from a scalar value.
   @inlinable @inline(__always)
+  @differentiable(vjp: _vjpScalarInit where Scalar : TensorFlowFloatingPoint)
   init(_ value: Scalar) {
     self.init(handle: _TFTensorFromScalar(value))
   }
+}
 
+internal extension Tensor where Scalar : TensorFlowFloatingPoint {
+  @inlinable
+  static func _vjpScalarInit(_ value: Scalar) -> (Tensor, (Tensor) -> Scalar) {
+    return (Tensor(value), { $0.scalarized() })
+  }
+}
+
+public extension Tensor {
   /// Creates a tensor from an array of tensors (which may themselves be
   /// scalars).
   @inlinable @inline(__always)
@@ -322,6 +334,20 @@ public extension Tensor {
     }
     self.init(handle: handle)
   }
+}
+
+public extension Tensor {
+  /// Creates a tensor with the specified shape and a single, repeated value.
+  ///
+  /// - Parameters:
+  ///   - shape: The dimensions of the tensor.
+  ///   - repeatedValue: The scalar value to repeat.
+  ///
+  @inlinable @inline(__always)
+  @available(*, deprecated, renamed: "init(repeating:shape:)")
+  init(shape: TensorShape, repeating repeatedValue: Scalar) {
+    self.init(repeating: repeatedValue, shape: shape)
+  }
 
   /// Creates a tensor with the specified shape and a single, repeated value.
   ///
@@ -329,24 +355,33 @@ public extension Tensor {
   ///   - shape: The dimensions of the tensor.
   ///   - repeatedValue: The scalar value to repeat.
   ///
-  // TODO: Deprecate this in favor of `init(repeating:shape:)`.
   @inlinable @inline(__always)
-  init(shape: TensorShape, repeating repeatedValue: Scalar) {
-    self.init(repeating: repeatedValue, shape: shape)
-  }
-
-  @inlinable @inline(__always)
+  @differentiable(vjp: _vjpInit(repeating:shape:)
+                  where Scalar : TensorFlowFloatingPoint)
   init(repeating repeatedValue: Scalar, shape: TensorShape) {
     self = Raw.fill(dims: Tensor<Int32>(shape.dimensions),
                     value: Tensor(repeatedValue))
   }
+}
 
+internal extension Tensor where Scalar : TensorFlowFloatingPoint {
+  @inlinable
+  static func _vjpInit(
+    repeating repeatedValue: Scalar,
+    shape: TensorShape
+  ) -> (Tensor, (Tensor) -> Scalar) {
+    return (Tensor(repeating: repeatedValue, shape: shape),
+            { $0.sum().scalarized() })
+  }
+}
+
+public extension Tensor {
   /// Creates a tensor by broadcasting the given scalar to a given rank with
   /// all dimensions being 1.
   @inlinable @inline(__always)
+  // @differentiable(where Scalar : TensorFlowFloatingPoint)
   init(broadcasting scalar: Scalar, rank: Int32) {
-    let shapeTensor = Tensor<Int32>(shape: [rank], repeating: 1)
-    self = Raw.fill(dims: shapeTensor, value: Tensor(scalar))
+    self = Tensor(scalar).reshaped(to: TensorShape(repeating: 1, count: rank))
   }
 
   /// Creates a tensor of shape `[4]` from a 4-tuple.
@@ -365,15 +400,15 @@ public extension Tensor {
 // Background story on `TensorElementLiteral` and why it's necessary:
 //
 // Very importantly, we want users to be able to implicitly convert an array
-// literal to a tensor. At a first glance, a straightfoward implementation would
+// literal to a tensor. At first glance, a straightfoward implementation would
 // be conforming `Tensor` to `ExpressibleByArrayLiteral` with
 // `ExpressibleBy(Float|Int|Bool)Literal` as a base case. However, it is not
 // that simple. We have binary operators that take `(Tensor, Scalar)`, `(Scalar,
-// Tensor)` as well as `(Tensor, Tensor)`. When `Tensor` are convertible from
+// Tensor)` as well as `(Tensor, Tensor)`. When `Tensor`s are convertible from
 // both a scalar and an array literal, a scalar-tensor binary operator like `+`
 // will not type check.
 //
-// One way to word around is to define all tensor-tensor operators on a
+// One way to work around it is to define all tensor-tensor operators in a
 // protocol extension, and all tensor-scalar and scalar-tensor operators on
 // concrete `Tensor`. Protocol extensions are less favorable than concrete
 // implementations, so the compiler will prefer the concrete implementation for
@@ -387,16 +422,15 @@ public extension Tensor {
 // `ArrayLiteralElement` be if we want to support both `[1,2,3]` and `[[[1,2],
 // [1,2]]]`? In the first case the array literal element is an interger, while
 // in the second case the array literal itself should be a tensor. Based on this
-// observation, we can come up with an intermediate type: `TensorLiteralElement`
-// as the `ArrayLiteralElement` of `Tensor`. By making `TensorLiteralElement`
+// observation, we come up with an intermediate type: `TensorElementLiteral` as
+// the `ArrayLiteralElement` of `Tensor`. By making `TensorElementLiteral`
 // expressible by both array literal and scalar literal, `Tensor` can now be
 // converted from an arbitrary-dimensional array literal.
 //
 // Due to protocol requirements, `TensorElementLiteral` has to be
 // public. It is never supposed to be used directly by any user, so the library
 // convention is to prepend an underscore to its name, making it
-// `_TensorElementLiteral`. However, we chose not to do that because underscored
-// types are ugly in error messages involving literal conversions to tensors.
+// `_TensorElementLiteral`.
 //
 // It would be nice to be able to remove this type when we can systematically
 // resolve tensor-scalar/scalar-tensor op ambiguity someday, either through an
@@ -405,10 +439,11 @@ public extension Tensor {
 
 /// Represents a literal element for conversion to a `Tensor`.
 ///
-/// - NOTE: Do not use this API directly. This is implicitly created during the
-/// conversion from an array literal to a `Tensor`.
+/// - Note: Do not ever use this API directly. This is implicitly created
+///   during the conversion from an array literal to a `Tensor`, and is purely
+///   for implementation purposes.
 @_fixed_layout
-public struct TensorElementLiteral<Scalar> : TensorProtocol
+public struct _TensorElementLiteral<Scalar> : TensorProtocol
   where Scalar : TensorFlowScalar {
 
   @usableFromInline let tensor: Tensor<Scalar>
@@ -424,7 +459,7 @@ public struct TensorElementLiteral<Scalar> : TensorProtocol
   }
 }
 
-extension TensorElementLiteral : ExpressibleByBooleanLiteral
+extension _TensorElementLiteral : ExpressibleByBooleanLiteral
   where Scalar : ExpressibleByBooleanLiteral {
   public typealias BooleanLiteralType = Scalar.BooleanLiteralType
   @inlinable @inline(__always)
@@ -433,7 +468,7 @@ extension TensorElementLiteral : ExpressibleByBooleanLiteral
   }
 }
 
-extension TensorElementLiteral : ExpressibleByIntegerLiteral
+extension _TensorElementLiteral : ExpressibleByIntegerLiteral
   where Scalar : ExpressibleByIntegerLiteral {
   public typealias IntegerLiteralType = Scalar.IntegerLiteralType
   @inlinable @inline(__always)
@@ -442,7 +477,7 @@ extension TensorElementLiteral : ExpressibleByIntegerLiteral
   }
 }
 
-extension TensorElementLiteral : ExpressibleByFloatLiteral
+extension _TensorElementLiteral : ExpressibleByFloatLiteral
   where Scalar : ExpressibleByFloatLiteral {
   public typealias FloatLiteralType = Scalar.FloatLiteralType
   @inlinable @inline(__always)
@@ -451,10 +486,10 @@ extension TensorElementLiteral : ExpressibleByFloatLiteral
   }
 }
 
-extension TensorElementLiteral : ExpressibleByArrayLiteral {
-  public typealias ArrayLiteralElement = TensorElementLiteral<Scalar>
+extension _TensorElementLiteral : ExpressibleByArrayLiteral {
+  public typealias ArrayLiteralElement = _TensorElementLiteral<Scalar>
   @inlinable @inline(__always)
-  public init(arrayLiteral elements: TensorElementLiteral<Scalar>...) {
+  public init(arrayLiteral elements: _TensorElementLiteral<Scalar>...) {
     // Attr T (non-optional in the op definition) need not be specified when we
     // run the op as part of a graph function, but need to be specified when we
     // run it via eager C API.
@@ -466,14 +501,14 @@ extension TensorElementLiteral : ExpressibleByArrayLiteral {
 
 extension Tensor : ExpressibleByArrayLiteral {
   /// The type of the elements of an array literal.
-  public typealias ArrayLiteralElement = TensorElementLiteral<Scalar>
+  public typealias ArrayLiteralElement = _TensorElementLiteral<Scalar>
 
   /// Creates a tensor initialized with the given elements.
   /// - Note: This is for conversion from tensor element literals. This is a
   /// separate method because `ShapedArray` initializers need to call it.
   @inlinable @inline(__always)
   internal init(
-    tensorElementLiterals elements: [TensorElementLiteral<Scalar>]
+    _tensorElementLiterals elements: [_TensorElementLiteral<Scalar>]
   ) {
     self.init(handle: #tfop("Pack", elements,
                             T$dtype: Scalar.tensorFlowDataType))
@@ -481,8 +516,8 @@ extension Tensor : ExpressibleByArrayLiteral {
 
   /// Creates a tensor initialized with the given elements.
   @inlinable @inline(__always)
-  public init(arrayLiteral elements: TensorElementLiteral<Scalar>...) {
-    self.init(tensorElementLiterals: elements)
+  public init(arrayLiteral elements: _TensorElementLiteral<Scalar>...) {
+    self.init(_tensorElementLiterals: elements)
   }
 }
 
@@ -495,6 +530,7 @@ public extension Tensor {
   @inlinable
   var rank: Int32 {
     @inline(__always)
+    @_semantics("autodiff.nonvarying")
     get {
       return _TFGetScalarOrDie(rankTensor.handle)
     }
@@ -504,6 +540,7 @@ public extension Tensor {
   @inlinable
   var shape: TensorShape {
     @inline(__always)
+    @_semantics("autodiff.nonvarying")
     get {
       return TensorShape(shapeTensor.scalars)
     }
@@ -529,7 +566,7 @@ public extension Tensor where Scalar : Numeric {
   /// - Parameter shape: The dimensions of the tensor.
   @inlinable @inline(__always)
   init(zeros shape: TensorShape) {
-    self.init(shape: shape, repeating: 0)
+    self.init(repeating: 0, shape: shape)
   }
 
   /// Creates a tensor with all scalars set to one.
@@ -537,16 +574,7 @@ public extension Tensor where Scalar : Numeric {
   /// - Parameter shape: The dimensions of the tensor.
   @inlinable @inline(__always)
   init(ones shape: TensorShape) {
-    self.init(shape: shape, repeating: 1)
-  }
-
-  @inline(never) // make @inlinable when implemented.
-  static func eye(
-    rowCount: Int, columnCount: Int? = nil, batchShape: [Int]? = nil
-  ) -> Tensor {
-    // NOTE: TF doesn't have an "Eye" op. Instead, the `tf.eye` function
-    // composes many tensor/linear algebra ops.
-    fatalError("FIXME: implement eye")
+    self.init(repeating: 1, shape: shape)
   }
 
   /// Creates a 1-D tensor representing a sequence from a starting value to, but
@@ -610,158 +638,6 @@ public extension Tensor where Scalar : Numeric {
 }
 
 //===----------------------------------------------------------------------===//
-// Random initialization
-//===----------------------------------------------------------------------===//
-
-public extension Tensor where Scalar == Int32 {
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a discrete uniform distribution.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///   - generator: Random number generator to use.
-  ///
-  @inlinable @inline(__always)
-  init<G: RandomNumberGenerator>(randomStandardUniform shape: TensorShape,
-                                 generator: inout G) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = UniformIntegerDistribution<Scalar>()
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &generator))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a discrete uniform distribution, using the default random number
-  /// generator.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///
-  // FIXME: Simply call above init() function when Hoistable closures capture
-  // mutating references correctly
-  @inlinable @inline(__always)
-  init(randomStandardUniform shape: TensorShape) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = UniformIntegerDistribution<Scalar>()
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &ARC4RandomNumberGenerator.global))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-
-}
-
-public extension Tensor where Scalar : BinaryFloatingPoint,
-                              Scalar.RawSignificand : FixedWidthInteger {
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a uniform distribution between 0 and 1.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///   - generator: Random number generator to use.
-  ///
-  @inlinable @inline(__always)
-  init<G: RandomNumberGenerator>(randomUniform shape: TensorShape,
-                                 generator: inout G) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = UniformFloatingPointDistribution<Scalar>()
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &generator))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a uniform distribution between 0 and 1, using the default random
-  /// number generator.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///
-  // FIXME: Simply call above init() function when Hoistable closures capture
-  // mutating references correctly
-  @inlinable @inline(__always)
-  init(randomUniform shape: TensorShape) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = UniformFloatingPointDistribution<Scalar>()
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &ARC4RandomNumberGenerator.global))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a normal distribution.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///   - mean: The mean of the distribution.
-  ///   - stddev: The standard deviation of the distribution.
-  ///   - generator: Random number generator to use.
-  ///
-  @inlinable @inline(__always)
-  init<G: RandomNumberGenerator>(randomNormal shape: TensorShape,
-                                 mean: Scalar = 0,
-                                 stddev: Scalar = 1,
-                                 generator: inout G) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = NormalDistribution<Scalar>(
-          mean: mean, standardDeviation: stddev)
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &generator))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-
-  /// Creates a tensor with the specified shape, randomly sampling scalar values
-  /// from a normal distribution, using the default random number generator.
-  ///
-  /// - Parameters:
-  ///   - shape: The dimensions of the tensor.
-  ///   - mean: The mean of the distribution.
-  ///   - stddev: The standard deviation of the distribution.
-  ///
-  // FIXME: Simply call above init() function when Hoistable closures capture
-  // mutating references correctly
-  @inlinable @inline(__always)
-  init(randomNormal shape: TensorShape, mean: Scalar = 0, stddev: Scalar = 1) {
-    self = Tensor(
-      handle: _TFHoistable {
-        let dist = NormalDistribution<Scalar>(
-          mean: mean, standardDeviation: stddev)
-        var scalars: [Scalar] = []
-        for _ in 0 ..< shape.contiguousSize {
-          scalars.append(dist.next(using: &ARC4RandomNumberGenerator.global))
-        }
-        return _TFTensorFromScalars(scalars, shape: shape.dimensions)
-      }
-    ).toAccelerator()
-  }
-}
-
-//===----------------------------------------------------------------------===//
 // Shape transformations
 //===----------------------------------------------------------------------===//
 
@@ -780,6 +656,7 @@ public extension Tensor {
   /// Reshape to the shape of the specified `Tensor`.
   /// - Precondition: The number of scalars matches the new shape.
   @inlinable @inline(__always)
+  @differentiable(wrt: self where Scalar : TensorFlowFloatingPoint)
   func reshaped<T>(like other: Tensor<T>) -> Tensor {
     return reshaped(toShape: other.shapeTensor)
   }
@@ -787,6 +664,7 @@ public extension Tensor {
   /// Reshape to the specified shape.
   /// - Precondition: The number of scalars matches the new shape.
   @inlinable @inline(__always)
+  @differentiable(wrt: self where Scalar : TensorFlowFloatingPoint)
   func reshaped(to newShape: TensorShape) -> Tensor {
     return reshaped(toShape: Tensor<Int32>(newShape.dimensions))
   }
@@ -796,7 +674,7 @@ public extension Tensor {
   @inlinable @inline(__always)
   @differentiable(
     wrt: self, vjp: _vjpReshaped(toShape:)
-    where Scalar : Differentiable & FloatingPoint
+    where Scalar : TensorFlowFloatingPoint
   )
   func reshaped(toShape newShape: Tensor<Int32>) -> Tensor {
     return Raw.reshape(self, shape: newShape)
@@ -820,7 +698,7 @@ public extension Tensor {
   @inlinable @inline(__always)
   @differentiable(
     wrt: self, vjp: _vjpExpandingShape(at:)
-    where Scalar : Differentiable & FloatingPoint
+    where Scalar : TensorFlowFloatingPoint
   )
   func expandingShape(at shapeIndex: Int32) -> Tensor {
     return Raw.expandDims(self, dim: Tensor<Int32>(shapeIndex))
@@ -839,8 +717,17 @@ public extension Tensor {
   /// Reshape to scalar.
   /// - Precondition: The tensor has exactly one scalar.
   @inlinable
+  @differentiable(wrt: self,
+                  vjp: _vjpScalarized where Scalar : TensorFlowFloatingPoint)
   func scalarized() -> Scalar {
     return _TFGetScalarOrDie(reshaped(to: []).handle)
+  }
+}
+
+extension Tensor where Scalar : TensorFlowFloatingPoint {
+  @inlinable
+  func _vjpScalarized() -> (Scalar, (Scalar) -> Tensor) {
+    return (scalarized(), { v in Tensor(v) })
   }
 }
 
@@ -930,6 +817,8 @@ public extension Tensor {
     @inline(__always)
     get {
       debugLog("Returning a host copy of array.")
+      internalConsistencyCheck(toHost().handle.isConcrete)
+
       // This is considered to be a well known way to produce a copy to the
       // host, so an "implicit copy to host" warning should not be produced.
       return toHost().handle.makeHostCopy()

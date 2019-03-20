@@ -4092,6 +4092,20 @@ Type TypeBase::openAnyExistentialType(OpenedArchetypeType *&opened) {
 }
 
 // SWIFT_ENABLE_TENSORFLOW
+// Makes a function with the same generic signature and extinfo as `copy`, but
+// with `params` parameters and `retTy` return type.
+static AnyFunctionType *
+makeFunctionType(AnyFunctionType *copy, ArrayRef<AnyFunctionType::Param> params,
+                 Type retTy, GenericSignature *genericSignature) {
+  if (!genericSignature)
+    if (auto *genericFunctionType = copy->getAs<GenericFunctionType>())
+      genericSignature = genericFunctionType->getGenericSignature();
+  if (genericSignature)
+    return GenericFunctionType::get(genericSignature, params, retTy,
+                                    copy->getExtInfo());
+  return FunctionType::get(params, retTy, copy->getExtInfo());
+}
+
 Optional<VectorSpace> TypeBase::getAutoDiffAssociatedVectorSpace(
     AutoDiffAssociatedVectorSpaceKind kind,
     LookupConformanceFn lookupConformance) {
@@ -4107,16 +4121,33 @@ Optional<VectorSpace> TypeBase::getAutoDiffAssociatedVectorSpace(
     return vs;
   };
 
-  // Tuples' Tangent/Cotangent is a tuple of each element's Tangent/Cotangent.
+  // Functions' tangent/cotangent is the same function except the innermost
+  // return type being replaced by its tangent/cotangent.
+  if (auto *fnTy = getAs<AnyFunctionType>()) {
+    auto resultSpace = fnTy->getResult()->getAutoDiffAssociatedVectorSpace(
+        kind, lookupConformance);
+    if (!resultSpace)
+      return cache(None);
+    return cache(VectorSpace::getFunction(
+        makeFunctionType(fnTy, fnTy->getParams(), resultSpace->getType(),
+                         fnTy->getOptGenericSignature())));
+  }
+
+  // Tuples' tangent/cotangent is a tuple of each element's Tangent/Cotangent.
   if (auto *tupleTy = getAs<TupleType>()) {
     SmallVector<TupleTypeElt, 8> newElts;
     for (auto elt : tupleTy->getElements()) {
       auto eltSpace = elt.getType()
           ->getAutoDiffAssociatedVectorSpace(kind, lookupConformance);
       if (!eltSpace)
-        return cache(None);
+        continue;
       newElts.push_back(elt.getWithType(eltSpace->getType()));
     }
+    if (newElts.empty())
+      return cache(
+          VectorSpace::getTuple(ctx.TheEmptyTupleType->castTo<TupleType>()));
+    if (newElts.size() == 1)
+      return cache(VectorSpace::getVector(newElts.front().getType()));
     auto *tupleType = TupleType::get(newElts, ctx)->castTo<TupleType>();
     return cache(VectorSpace::getTuple(tupleType));
   }
@@ -4124,8 +4155,8 @@ Optional<VectorSpace> TypeBase::getAutoDiffAssociatedVectorSpace(
   // Find the TangentVector/CotangentVector associated type on the
   // Differentiable protocol.
   auto *differentiableProtocol =
-      ctx.getProtocol(KnownProtocolKind::Differentiable);
-  assert(differentiableProtocol && "could not find Differentiable protocol");
+      ctx.getProtocol(KnownProtocolKind::__Differentiable);
+  assert(differentiableProtocol && "Could not find __Differentiable protocol");
   Identifier associatedTypeIdentifier;
   switch (kind) {
   case AutoDiffAssociatedVectorSpaceKind::Tangent:
@@ -4149,21 +4180,6 @@ Optional<VectorSpace> TypeBase::getAutoDiffAssociatedVectorSpace(
 
   // There is no associated vector space.
   return cache(None);
-}
-
-// Makes a function with the same generic signature and extinfo as `copy`, but
-// with `params` parameters and `retTy` return type.
-static AnyFunctionType *
-makeFunctionType(AnyFunctionType *copy, ArrayRef<AnyFunctionType::Param> params,
-                 Type retTy, GenericSignature *whereClauseGenSig) {
-  auto genericSignature = whereClauseGenSig;
-  if (!genericSignature)
-    if (auto *genericFunctionType = copy->getAs<GenericFunctionType>())
-      genericSignature = genericFunctionType->getGenericSignature();
-  if (genericSignature)
-    return GenericFunctionType::get(genericSignature, params, retTy,
-                                    copy->getExtInfo());
-  return FunctionType::get(params, retTy, copy->getExtInfo());
 }
 
 AnyFunctionType *AnyFunctionType::getAutoDiffAssociatedFunctionType(

@@ -2799,6 +2799,10 @@ public:
     /// Whether the parameter is marked 'owned'
     bool isOwned() const { return Flags.isOwned(); }
 
+    // SWIFT_ENABLE_TENSORFLOW
+    /// Whether the parameter is marked '@nondiff'.
+    bool isNonDifferentiable() const { return Flags.isNonDifferentiable(); }
+
     ValueOwnership getValueOwnership() const {
       return Flags.getValueOwnership();
     }
@@ -3093,9 +3097,9 @@ public:
   /// Given `indices`, `differentiationOrder`, and `kind`, calculates the type
   /// of the corresponding autodiff associated function.
   ///
-  /// \note The original function type (`self`) need not be `@autodiff`, and the
-  /// resulting function will preserve all `ExtInfo` of the original function,
-  /// including `@autodiff`.
+  /// \note The original function type (`self`) need not be `@differentiable`,
+  /// and the resulting function will preserve all `ExtInfo` of the original
+  /// function, including `@differentiable`.
   AnyFunctionType *getAutoDiffAssociatedFunctionType(
       AutoDiffParameterIndices *indices, unsigned resultIndex,
       unsigned differentiationOrder, AutoDiffAssociatedFunctionKind kind,
@@ -4153,6 +4157,8 @@ public:
   // SWIFT_ENABLE_TENSORFLOW
   CanSILFunctionType getWithDifferentiability(
       unsigned differentiationOrder, const SmallBitVector &parameterIndices);
+
+  CanSILFunctionType getWithoutDifferentiability();
 
   /// Returns the type of a differentiation function that is associated with
   /// a function of this type.

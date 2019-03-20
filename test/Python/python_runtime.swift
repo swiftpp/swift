@@ -10,9 +10,10 @@ var PythonRuntimeTestSuite = TestSuite("PythonRuntime")
 PythonLibrary.useVersion(2, 7)
 
 PythonRuntimeTestSuite.test("CheckVersion") {
-  let sysModule = Python.import("sys")
-  let version = String(sysModule.version)!
-  expectEqual("2.7.", version.prefix(4))
+  expectEqual("2.7.", String(Python.version)!.prefix(4))
+  let versionInfo = Python.versionInfo
+  expectEqual(2, versionInfo.major)
+  expectEqual(7, versionInfo.minor)
 }
 
 PythonRuntimeTestSuite.test("PythonList") {
@@ -81,6 +82,20 @@ PythonRuntimeTestSuite.test("PartialRangeUpTo") {
   expectEqual(5, range?.upperBound)
 
   expectNil(PartialRangeUpTo<Int>(PythonObject(5...)))
+}
+
+PythonRuntimeTestSuite.test("Strideable") {
+  let strideTo = stride(from: PythonObject(0), to: 100, by: 2)
+  expectEqual(0, strideTo.min()!)
+  expectEqual(98, strideTo.max()!)
+  expectEqual([0, 2, 4, 6, 8], Array(strideTo.prefix(5)))
+  expectEqual([90, 92, 94, 96, 98], Array(strideTo.suffix(5)))
+
+  let strideThrough = stride(from: PythonObject(0), through: 100, by: 2)
+  expectEqual(0, strideThrough.min()!)
+  expectEqual(100, strideThrough.max()!)
+  expectEqual([0, 2, 4, 6, 8], Array(strideThrough.prefix(5)))
+  expectEqual([92, 94, 96, 98, 100], Array(strideThrough.suffix(5)))
 }
 
 PythonRuntimeTestSuite.test("BinaryOps") {
@@ -250,6 +265,20 @@ PythonRuntimeTestSuite.test("PythonConvertible") {
   expectEqual(five, UInt64(5).pythonObject)
   expectEqual(five, Float(5).pythonObject)
   expectEqual(five, Double(5).pythonObject)
+}
+
+PythonRuntimeTestSuite.test("SR-9230") {
+  expectEqual(2, Python.len(Python.dict(a: "a", b: "b")))
+}
+
+// TF-78: isType() consumed refcount for type objects like `PyBool_Type`.
+PythonRuntimeTestSuite.test("PythonRefCount") {
+  let b: PythonObject = true
+  for _ in 0...20 {
+    // This triggers isType(), which used to crash after repeated invocation
+    // because of reduced refcount for `PyBool_Type`.
+    _ = Bool.init(b)
+  }
 }
 
 runAllTests()

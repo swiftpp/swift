@@ -2403,10 +2403,22 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
       indices.push_back(paramIndices->parameters[i]);
 
     DifferentiableDeclAttrLayout::emitRecord(
-      Out, ScratchRecord, abbrCode, attr->isImplicit(),
-      jvpName, jvpRef, vjpName, vjpRef, indices);
+        Out, ScratchRecord, abbrCode, attr->isImplicit(),
+        jvpName, jvpRef, vjpName, vjpRef, indices);
 
     writeGenericRequirements(attr->getRequirements(), DeclTypeAbbrCodes);
+    return;
+  }
+
+  // SWIFT_ENABLE_TENSORFLOW
+  case DAK_Differentiating: {
+    auto abbrCode = DeclTypeAbbrCodes[DifferentiatingDeclAttrLayout::Code];
+    auto attr = cast<DifferentiatingAttr>(DA);
+    IdentifierID origName =
+        addDeclBaseNameRef(attr->getOriginal().Name.getBaseName());
+    DeclID origRef = addDeclRef(attr->getOriginalFunction());
+    DifferentiatingDeclAttrLayout::emitRecord(
+        Out, ScratchRecord, abbrCode, attr->isImplicit(), origName, origRef);
     return;
   }
   }
@@ -3681,6 +3693,17 @@ static uint8_t getRawStableParameterConvention(swift::ParameterConvention pc) {
   llvm_unreachable("bad parameter convention kind");
 }
 
+/// Translate from AST SILParameterDifferentiability enum to the Serialization
+/// enum values, which are guaranteed to be stable.
+static uint8_t
+getRawSILParameterDifferentiability(swift::SILParameterDifferentiability pd) {
+  switch (pd) {
+  SIMPLE_CASE(SILParameterDifferentiability, DifferentiableOrNotApplicable)
+  SIMPLE_CASE(SILParameterDifferentiability, NotDifferentiable)
+  }
+  llvm_unreachable("bad parameter differentiability kind");
+}
+
 /// Translate from the AST ResultConvention enum to the
 /// Serialization enum values, which are guaranteed to be stable.
 static uint8_t getRawStableResultConvention(swift::ResultConvention rc) {
@@ -3974,6 +3997,10 @@ void Serializer::writeType(Type ty) {
       variableData.push_back(addTypeRef(param.getType()));
       unsigned conv = getRawStableParameterConvention(param.getConvention());
       variableData.push_back(TypeID(conv));
+      // SWIFT_ENABLE_TENSORFLOW
+      if (fnTy->isDifferentiable())
+        variableData.push_back(TypeID(
+            getRawSILParameterDifferentiability(param.getDifferentiability())));
     }
     for (auto yield : fnTy->getYields()) {
       variableData.push_back(addTypeRef(yield.getType()));

@@ -35,7 +35,7 @@ internal final class TensorBuffer<Scalar> {
   final class BoxedArray {
     var array: [Scalar]
 
-    init(_ array: [Scalar]) {
+    init(_ array: __owned [Scalar]) {
       self.array = array
     }
   }
@@ -120,21 +120,20 @@ extension TensorBuffer {
   }
 
   func withUnsafeBufferPointer<R>(
-    _ body: (inout UnsafeBufferPointer<Scalar>) throws -> R
+    _ body: (UnsafeBufferPointer<Scalar>) throws -> R
   ) rethrows -> R {
     switch allocation {
     case let .native(box):
       return try box.array.withUnsafeBufferPointer { bufferPtr in
-        var bufferPtr = bufferPtr
-        return try body(&bufferPtr)
+        return try body(bufferPtr)
       }
     case let .tensorFlow(cTensor):
       let startAddress = TF_TensorData(cTensor)
         .assumingMemoryBound(to: Scalar.self)
-      var bufferPointer = UnsafeBufferPointer(
+      let bufferPointer = UnsafeBufferPointer(
         start: startAddress, count: count
       )
-      return try body(&bufferPointer)
+      return try body(bufferPointer)
     }
   }
 }
@@ -212,8 +211,17 @@ public extension _ShapedArrayProtocol {
   /// Returns the single scalar element if the array has rank 0 and `nil`
   /// otherwise.
   var scalar: Scalar? {
-    guard rank == 0 else { return nil }
-    return scalars.first
+    get {
+      guard rank == 0 else { return nil }
+      return scalars.first
+    }
+    set {
+      precondition(isScalar, "Array does not have shape [].")
+      guard let newValue = newValue else {
+        preconditionFailure("New scalar value cannot be nil.")
+      }
+      scalars[0] = newValue
+    }
   }
 }
 
@@ -293,7 +301,7 @@ public struct ShapedArray<Scalar> : _ShapedArrayProtocol {
   public private(set) var shape: [Int]
 
   /// Creates a `ShapedArray` from a `TensorBuffer` and a shape.
-  internal init(buffer: TensorBuffer<Scalar>, shape: [Int]) {
+  internal init(buffer: __owned TensorBuffer<Scalar>, shape: __owned [Int]) {
     precondition(buffer.count == shape.reduce(1, *),
       "The scalar count of the buffer does not match the shape.")
     self.buffer = buffer
@@ -350,19 +358,15 @@ public extension ShapedArray {
     self.init(buffer: other.buffer, shape: other.shape)
   }
 
-  init(shape: [Int], scalars: [Scalar]) {
-    let scalarCount = shape.reduce(1, *)
-    precondition(scalarCount == scalars.count, "Scalar count mismatch.")
-    let buffer = TensorBuffer<Scalar>.create(count: scalarCount) { buffPtr in
-      let ptr = buffPtr.baseAddress!
-      scalars.withUnsafeBufferPointer { arrayBuf in
-        ptr.initialize(from: arrayBuf.baseAddress!, count: scalarCount)
-      }
-    }
+  init(shape: __owned [Int], scalars: __owned [Scalar]) {
+    precondition(shape.reduce(1, *) == scalars.count, "Scalar count mismatch.")
+    let buffer = TensorBuffer<Scalar>(allocation: .native(.init(scalars)),
+                                      count: scalars.count)
     self.init(buffer: buffer, shape: shape)
   }
 
-  init<S : Sequence>(shape: [Int], scalars: S) where S.Element == Scalar {
+  init<S : Sequence>(shape: __owned [Int],
+                     scalars: __shared S) where S.Element == Scalar {
     let scalarCount = shape.reduce(1, *)
     let buffer = TensorBuffer<Scalar>.create(count: scalarCount) { buffPtr in
       let ptr = buffPtr.baseAddress!
@@ -382,12 +386,11 @@ public extension ShapedArray {
   }
 
   /// Creates a `ShapedArray` from a scalar value.
-  init(_ scalar: Scalar) {
-    let buffer = TensorBuffer<Scalar>.create(count: 1) { buffPtr in
-      let ptr = buffPtr.baseAddress!
-      ptr.initialize(to: scalar)
-    }
-    self.init(buffer: buffer, shape: [])
+  init(_ scalar: __owned Scalar) {
+    self.init(
+      buffer: TensorBuffer(allocation: .native(.init([scalar])), count: 1),
+      shape: []
+    )
   }
 
   /// Creates a `ShapedArray` with the specified shape and a single, repeated
@@ -395,12 +398,13 @@ public extension ShapedArray {
   /// - Parameters:
   ///   - shape: The dimensions of the array.
   ///   - repeatedValue: The scalar value to repeat.
-  init(shape: [Int], repeating repeatedValue: Scalar) {
+  init(shape: __owned [Int], repeating repeatedValue: __owned Scalar) {
     let scalarCount = shape.reduce(1, *)
-    let buffer = TensorBuffer<Scalar>.create(count: scalarCount) { buffPtr in
-      let ptr = buffPtr.baseAddress!
-      ptr.initialize(repeating: repeatedValue, count: scalarCount)
-    }
+    let buffer = TensorBuffer<Scalar>(
+      allocation: .native(.init(Array(repeating: repeatedValue,
+                                      count: scalarCount))),
+      count: scalarCount
+    )
     self.init(buffer: buffer, shape: shape)
   }
 }
@@ -486,8 +490,8 @@ public extension ShapedArray {
   func withUnsafeBufferPointer<Result>(
     _ body: (UnsafeBufferPointer<Scalar>) throws -> Result
   ) rethrows -> Result {
-    return try buffer.withUnsafeMutableBufferPointer { ptr in
-      try body(UnsafeBufferPointer(ptr))
+    return try buffer.withUnsafeBufferPointer { ptr in
+      try body(ptr)
     }
   }
 
@@ -501,14 +505,14 @@ public extension ShapedArray {
   }
 }
 
-/// Tensor conversion
+/// Tensor conversion.
 extension ShapedArray where Scalar : TensorFlowScalar {
   var byteCount: Int {
     return MemoryLayout<Scalar>.stride * scalarCount
   }
 
   @usableFromInline
-  func makeTensorHandle() -> TensorHandle<Scalar> {
+  __consuming func makeTensorHandle() -> TensorHandle<Scalar> {
     // This initializer is designed to optimize conversion from TF-allocated
     // `ShapedArray` instances.
     switch buffer.allocation {
@@ -532,31 +536,39 @@ extension ShapedArray where Scalar : TensorFlowScalar {
   }
 }
 
-/// Tensor conversion
+/// Tensor conversion.
 public extension Tensor {
-  init(_ array: ShapedArray<Scalar>) {
+  init(_ array: __owned ShapedArray<Scalar>) {
     self.init(handle: array.makeTensorHandle())
   }
 }
 
-/// Array literal conversion
+/// Array literal conversion.
 extension ShapedArray : ExpressibleByArrayLiteral
   where Scalar : TensorFlowScalar {
-  public typealias ArrayLiteralElement = TensorElementLiteral<Scalar>
+  public typealias ArrayLiteralElement = _TensorElementLiteral<Scalar>
   @inlinable @inline(__always)
-  public init(arrayLiteral elements: TensorElementLiteral<Scalar>...) {
-    self = Tensor<Scalar>(tensorElementLiterals: elements).array
+  public init(arrayLiteral elements: _TensorElementLiteral<Scalar>...) {
+    self = Tensor<Scalar>(_tensorElementLiterals: elements).array
   }
 }
 
-/// Equatable conformance
+/// Equatable conformance.
 extension ShapedArray : Equatable where Scalar : Equatable {
   public static func == (lhs: ShapedArray, rhs: ShapedArray) -> Bool {
     return lhs._isEqual(to: rhs)
   }
 }
 
-/// String conversion
+/// Hashable conformance.
+extension ShapedArray : Hashable where Scalar : Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(shape)
+    hasher.combine(scalars)
+  }
+}
+
+/// String conversion.
 extension ShapedArray : CustomStringConvertible {
   /// A textual representation of this `ShapedArray`.
   public var description: String {
@@ -663,8 +675,8 @@ public struct ShapedArraySlice<Scalar> : _ShapedArrayProtocol {
   /// subdimensional indices and subarray bounds.
   @inlinable
   internal init(
-    base: ShapedArray<Scalar>,
-    baseIndices indices: [Int] = [],
+    base: __owned ShapedArray<Scalar>,
+    baseIndices indices: __owned [Int] = [],
     bounds: Range<Int>? = nil
   ) {
     precondition(indices.count <= base.rank,
@@ -700,18 +712,19 @@ public extension ShapedArraySlice {
   }
 }
 
-/// Slice initializers
+/// Slice initializers.
 public extension ShapedArraySlice {
-  init(shape: [Int], scalars: [Scalar]) {
+  init(shape: __owned [Int], scalars: __owned [Scalar]) {
     self.init(base: ShapedArray(shape: shape, scalars: scalars))
   }
 
-  init<S : Sequence>(shape: [Int], scalars: S) where S.Element == Scalar {
+  init<S : Sequence>(shape: __owned [Int],
+                     scalars: __shared S) where S.Element == Scalar {
     self.init(base: ShapedArray(shape: shape, scalars: scalars))
   }
 
   /// Creates a `ShapedArraySlice` from a scalar value.
-  init(_ scalar: Scalar) {
+  init(_ scalar: __owned Scalar) {
     self.init(base: ShapedArray(scalar))
   }
 
@@ -720,7 +733,7 @@ public extension ShapedArraySlice {
   /// - Parameters:
   ///   - shape: The dimensions of the array.
   ///   - repeatedValue: The scalar value to repeat.
-  init(shape: [Int], repeating repeatedValue: Scalar) {
+  init(shape: __owned [Int], repeating repeatedValue: __owned Scalar) {
     self.init(base: ShapedArray(shape: shape, repeating: repeatedValue))
   }
 }
@@ -865,31 +878,39 @@ extension ShapedArraySlice : RandomAccessCollection, MutableCollection {
   }
 }
 
-/// Tensor conversion
+/// Tensor conversion.
 public extension ShapedArraySlice where Scalar : TensorFlowScalar {
-  init(_ tensor: Tensor<Scalar>) {
+  init(_ tensor: __shared Tensor<Scalar>) {
     self.init(base: tensor.array)
   }
 }
 
-/// Array literal conversion
+/// Array literal conversion.
 extension ShapedArraySlice : ExpressibleByArrayLiteral
   where Scalar : TensorFlowScalar {
-  public typealias ArrayLiteralElement = TensorElementLiteral<Scalar>
+  public typealias ArrayLiteralElement = _TensorElementLiteral<Scalar>
   @inlinable @inline(__always)
-  public init(arrayLiteral elements: TensorElementLiteral<Scalar>...) {
-    self.init(base: Tensor(tensorElementLiterals: elements).array)
+  public init(arrayLiteral elements: _TensorElementLiteral<Scalar>...) {
+    self.init(base: Tensor(_tensorElementLiterals: elements).array)
   }
 }
 
-/// Equatable conformance
+/// Equatable conformance.
 extension ShapedArraySlice : Equatable where Scalar : Equatable {
   public static func == (lhs: ShapedArraySlice, rhs: ShapedArraySlice) -> Bool {
     return lhs._isEqual(to: rhs)
   }
 }
 
-/// String conversion
+/// Hashable conformance.
+extension ShapedArraySlice : Hashable where Scalar : Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(shape)
+    hasher.combine(scalars)
+  }
+}
+
+/// String conversion.
 extension ShapedArraySlice : CustomStringConvertible {
   /// A textual representation of this `ShapedArraySlice`.
   public var description: String {
@@ -897,7 +918,7 @@ extension ShapedArraySlice : CustomStringConvertible {
   }
 }
 
-/// Xcode Playground display conversion
+/// Xcode Playground display conversion.
 extension ShapedArraySlice : CustomPlaygroundDisplayConvertible {
   public var playgroundDescription: Any {
     return description

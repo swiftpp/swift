@@ -3218,29 +3218,52 @@ bool NominalTypeDecl::isOptionalDecl() const {
 }
 
 // SWIFT_ENABLE_TENSORFLOW
-void
-NominalTypeDecl::getAllTFParameters(SmallVectorImpl<VarDecl *> &result) const {
-  for (auto member : getStoredProperties())
-    if (member->getAttrs().hasAttribute<TFParameterAttr>())
-      result.push_back(member);
-}
+ConstructorDecl *NominalTypeDecl::getEffectiveMemberwiseInitializer() {
+  auto isEffectiveMemberwiseInitializer = [&](ConstructorDecl *ctorDecl) {
+    // Check for `nullptr`.
+    if (!ctorDecl)
+      return false;
+    // Return true if `ctorDecl` is marked as a memberwise initializer.
+    if (ctorDecl->isMemberwiseInitializer())
+      return true;
+    // Get all stored properties, excluding `let` properties with initial
+    // values.
+    SmallVector<VarDecl *, 8> storedProperties;
+    for (auto *vd : getStoredProperties()) {
+      if (vd->isLet() && vd->hasInitialValue())
+        continue;
+      storedProperties.push_back(vd);
+    }
+    // Return false if constructor does not have interface type set. It is not
+    // possible to determine whether it is a memberwise initializer.
+    if (!ctorDecl->hasInterfaceType())
+      return false;
+    auto ctorType =
+        ctorDecl->getMethodInterfaceType()->getAs<AnyFunctionType>();
+    // Return false if constructor does not have a valid method interface type.
+    if (!ctorType)
+      return false;
+    // Return false if stored property/initializer parameter count do not match.
+    if (storedProperties.size() != ctorType->getNumParams())
+      return false;
+    // Return true if all stored property types/names match initializer
+    // parameter types/labels.
+    return llvm::all_of(
+        llvm::zip(storedProperties, ctorType->getParams()),
+        [&](std::tuple<VarDecl *, AnyFunctionType::Param> pair) {
+          auto *storedProp = std::get<0>(pair);
+          auto param = std::get<1>(pair);
+          return storedProp->getInterfaceType()->isEqual(
+                     param.getPlainType()) &&
+                 storedProp->getName() == param.getLabel();
+        });
+  };
 
-// SWIFT_ENABLE_TENSORFLOW
-ConstructorDecl *NominalTypeDecl::getMemberwiseInitializer() {
   ConstructorDecl *memberwiseInitDecl = nullptr;
   auto ctorDecls = lookupDirect(DeclBaseName::createConstructor());
   for (auto decl : ctorDecls) {
     auto ctorDecl = dyn_cast<ConstructorDecl>(decl);
-    if (!ctorDecl)
-      continue;
-    // Continue if:
-    // - Constructor is not a memberwise initializer.
-    // - Constructor is implicit and takes no arguments, and nominal has no
-    //   stored properties. This is ad-hoc and accepts empty struct
-    //   constructors generated via `TypeChecker::defineDefaultConstructor`.
-    if (!ctorDecl->isMemberwiseInitializer() &&
-        !(getStoredProperties().empty() && ctorDecl->isImplicit() &&
-          ctorDecl->getParameters()->size() == 0))
+    if (!isEffectiveMemberwiseInitializer(ctorDecl))
       continue;
     assert(!memberwiseInitDecl && "Memberwise initializer already found");
     memberwiseInitDecl = ctorDecl;

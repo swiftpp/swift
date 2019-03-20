@@ -4,7 +4,6 @@
 // VJP-based AD. See SR-9638.
 //
 // REQUIRES: executable_test
-// REQUIRES: swift_test_mode_optimize
 //
 // Tensor AD runtime tests.
 
@@ -23,10 +22,25 @@ TensorADTests.testAllBackends("TestSimpleGrad") {
 }
 
 TensorADTests.testAllBackends("TestGenericGrad") {
-  func square<T : FloatingPoint & Differentiable>(_ x: Tensor<T>) -> Tensor<T> {
+  func square<T : TensorFlowFloatingPoint>(_ x: Tensor<T>) -> Tensor<T> {
     return x * x
   }
   expectEqual([0.2, 0.4, 0.6], gradient(at: Tensor([0.1, 0.2, 0.3]), in: square))
+}
+
+TensorADTests.testAllBackends("TestScalarGenericGrad") {
+  // Tests TF-287.
+  func negate<T : TensorFlowFloatingPoint>(_ x: Tensor<T>) -> Tensor<T> {
+    return 1 - x
+  }
+  expectEqual(Tensor(-1), gradient(at: Tensor([0.1, 0.2, 0.3]), in: negate))
+}
+
+TensorADTests.testAllBackends("TestScalarized") {
+  let grad = gradient(at: Tensor<Float>([3.0, 4.0])) { x in
+    logSoftmax(x).mean().scalarized()
+  }
+  expectEqual(Tensor([0.23105857, -0.2310586]), grad)
 }
 
 TensorADTests.testAllBackends("+") {
@@ -73,29 +87,28 @@ TensorADTests.testAllBackends("negate") {
 }
 
 TensorADTests.testAllBackends("sum") {
-  let input = Tensor<Float>(randomNormal: [2, 2])
+  let input = Tensor<Float>(shape: [2, 2], repeating: 42)
   let sumPullbackScalar = pullback(at: input) { (a: Tensor<Float>) in a.sum() }
-  let sumPullbackSqueezingAxes = pullback(at: input) { (a: Tensor<Float>) in a.sum(squeezingAxes: 0, 1) }
   let sumPullbackAlongAxes = pullback(at: input) { (a: Tensor<Float>) in a.sum(alongAxes: 0, 1) }
 
   let expected = Tensor<Float>(ones: [2, 2])
   expectTrue(sumPullbackScalar(Tensor(1)) == expected)
-  expectTrue(sumPullbackSqueezingAxes(Tensor(1)) == expected)
+  // expectTrue(sumPullbackSqueezingAxes(Tensor(1)) == expected)
   expectTrue(sumPullbackAlongAxes(Tensor(1))  == expected)
   expectTrue(sumPullbackScalar(Tensor(3)) == expected * 3)
-  expectTrue(sumPullbackSqueezingAxes(Tensor(3)) == expected * 3)
+  // expectTrue(sumPullbackSqueezingAxes(Tensor(3)) == expected * 3)
   expectTrue(sumPullbackAlongAxes(Tensor(3)) == expected * 3)
 }
 
 TensorADTests.testAllBackends("mean") {
   let meanGradScalar = gradient { (a: Tensor<Float>) in a.mean() }
-  let meanGradSqueezingAxes = gradient { (a: Tensor<Float>) in a.mean(squeezingAxes: 0, 1) }
+  // let meanGradSqueezingAxes = gradient { (a: Tensor<Float>) in a.mean(squeezingAxes: 0, 1) }
   let meanGradAlongAxes = gradient { (a: Tensor<Float>) in a.mean(alongAxes: 0, 1) }
 
   let input = Tensor<Float>(ones: [2, 2])
   let expected = Tensor<Float>(shape: [2, 2], repeating: 0.25)
   expectTrue(meanGradScalar(input) == expected)
-  expectTrue(meanGradSqueezingAxes(input) == expected)
+  // expectTrue(meanGradSqueezingAxes(input) == expected)
   expectTrue(meanGradAlongAxes(input) == expected)
 }
 
@@ -147,12 +160,37 @@ TensorADTests.testAllBackends("SR-9345: OwnedCheckpoints") {
     return foo(foo(x))
   }
   let pb = pullback(at: Tensor(Float(10)), in: body)
-  expectEqual(Tensor(1.0), pb(Tensor(1)))
+  expectEqual(Tensor(1), pb(Tensor(1)))
+}
+
+TensorADTests.testAllBackends("SR-9804: AD refcounting") {
+  func f(_ x: Tensor<Float>) -> Tensor<Float> {
+    return x
+  }
+  expectEqual(Tensor(1), gradient(at: Tensor(0), in: f))
 }
 
 let cube: (Tensor<Float>) -> Tensor<Float> = { $0 * $0 * $0 }
-TensorADTests.testAllBackends("DifferentiateGlobal") {
+TensorADTests.testAllBackends("Differentiate global") {
   expectEqual(Tensor(48), gradient(at: Tensor(4), in: cube))
+}
+
+TensorADTests.testAllBackends("Side effects") {
+  let foo: @differentiable (Tensor<Float>) -> Tensor<Float> = { x in
+    var a = x
+    a = a + x
+    a = a + x
+    return a + x
+  }
+  expectEqual(Tensor([8, 8]), pullback(at: Tensor(4), in: foo)([1, 1]))
+
+  func bar(x: Tensor<Float>) -> Tensor<Float> {
+    var a = x
+    a = a * x
+    a = a * x
+    return a
+  }
+  expectEqual(Tensor(48), gradient(at: Tensor(4), in: bar))
 }
 
 runAllTests()

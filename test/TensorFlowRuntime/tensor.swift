@@ -50,15 +50,6 @@ TensorTests.testAllBackends("NumericInitializers") {
               x.array)
 }
 
-TensorTests.testAllBackends("RandomInitializer") {
-  let _ = Tensor<Float>(randomUniform: [3, 4])
-  let _ = Tensor<Float>(randomNormal: [3, 4])
-  // TODO: remove the extra code below once TPU execution supports 0 output
-  // tensors (b/111123797)
-  let extra = Tensor<Float>(1.0)
-  _hostOp(extra)
-}
-
 TensorTests.testAllBackends("ScalarToTensorConversion") {
   let tensor = Tensor<Float>(broadcasting: 42, rank: 4)
   expectEqual([1, 1, 1, 1], tensor.shape)
@@ -144,29 +135,6 @@ TensorTests.testAllBackends("ElementIndexing") {
   expectEqual([43], array0D.scalars)
 }
 
-TensorTests.testAllBackends("NestedElementIndexing") {
-  // NOTE: This tests the `subscript(indices:)` method, which is distinct from
-  // the `subscript(index:)` method.
-  // NOTE: This test could use a clearer name, along with other "indexing"
-  // tests. Note to update corresponding test names in other files
-  // (ranked_tensor.test, shaped_array.test) as well.
-  let tensor3D = Tensor<Float>(shape: [3, 4, 5],
-                               scalars: Array(stride(from: 0.0, to: 60, by: 1)))
-  let element1D = tensor3D[1, 3]
-  let element0D = tensor3D[2, 0, 3]
-
-  let array1D = element1D.array
-  let array0D = element0D.array
-
-  /// Test shapes
-  expectEqual([5], array1D.shape)
-  expectEqual([], array0D.shape)
-
-  /// Test scalars
-  expectEqual(Array(stride(from: 35.0, to: 40, by: 1)), array1D.scalars)
-  expectEqual([43], array0D.scalars)
-}
-
 TensorTests.testAllBackends("SliceIndexing") {
   // XLA compilation error under TPU.
   if _RuntimeConfig.executionMode.isTPU { return }
@@ -236,6 +204,21 @@ TensorTests.testAllBackends("Concatenation") {
   expectEqual(ShapedArray(shape: [2, 6],
                           scalars: [0, 1, 2, 6, 7, 8, 3, 4, 5, 9, 10, 11]),
               concatenated1.array)
+}
+
+TensorTests.testAllBackends("VJPConcatenation") {
+  let a1 = Tensor<Float>([1,2,3,4])
+  let b1 = Tensor<Float>([5,6,7,8,9,10])
+
+  let a2 = Tensor<Float>([1,1,1,1])
+  let b2 = Tensor<Float>([1,1,1,1,1,1])
+
+  let grads = gradient(at: a2, b2) { a, b in
+    return ((a1 * a) ++ (b1 * b)).sum()
+  }
+
+  expectEqual(a1, grads.0)
+  expectEqual(b1, grads.1)
 }
 
 TensorTests.test("EwiseComparison") {

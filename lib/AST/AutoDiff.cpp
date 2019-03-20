@@ -69,7 +69,7 @@ autodiff::getNumAutoDiffAssociatedFunctions(unsigned differentiationOrder) {
 
 bool autodiff::getBuiltinAutoDiffApplyConfig(
     StringRef operationName, AutoDiffAssociatedFunctionKind &kind,
-    unsigned &arity, unsigned &order, bool &rethrows, bool &isMethod) {
+    unsigned &arity, unsigned &order, bool &rethrows) {
   // SWIFT_ENABLE_TENSORFLOW
   if (!operationName.startswith("autodiffApply_"))
     return false;
@@ -108,13 +108,6 @@ bool autodiff::getBuiltinAutoDiffApplyConfig(
     rethrows = true;
   } else {
     rethrows = false;
-  }
-  // Parse '_method'.
-  if (operationName.startswith("_method")) {
-    operationName = operationName.drop_front(strlen("_method"));
-    isMethod = true;
-  } else {
-    isMethod = false;
   }
   return operationName.empty();
 }
@@ -269,8 +262,8 @@ static unsigned getNumAutoDiffParameterIndices(AnyFunctionType *fnTy) {
 }
 
 AutoDiffParameterIndicesBuilder::AutoDiffParameterIndicesBuilder(
-    AnyFunctionType *functionType, bool setAllParams) :
-    parameters(getNumAutoDiffParameterIndices(functionType), setAllParams) {
+    AnyFunctionType *functionType, bool setAllParams)
+    : parameters(getNumAutoDiffParameterIndices(functionType), setAllParams) {
 }
 
 AutoDiffParameterIndices *
@@ -283,12 +276,23 @@ void AutoDiffParameterIndicesBuilder::setParameter(unsigned paramIndex) {
   parameters.set(paramIndex);
 }
 
+void AutoDiffParameterIndicesBuilder::setParameters(unsigned lowerBound,
+                                                    unsigned upperBound) {
+  parameters.set(lowerBound, upperBound);
+}
+
+void AutoDiffParameterIndicesBuilder::setAllParameters() {
+  parameters.set();
+}
+
 Type VectorSpace::getType() const {
   switch (kind) {
   case Kind::Vector:
     return value.vectorType;
   case Kind::Tuple:
     return value.tupleType;
+  case Kind::Function:
+    return value.functionType;
   }
 }
 

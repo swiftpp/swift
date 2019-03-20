@@ -1759,6 +1759,9 @@ namespace {
     Type buildProtocolType(ProtocolTypeRepr *repr,
                            Type instanceType,
                            Optional<MetatypeRepresentation> storedRepr);
+
+    // SWIFT_ENABLE_TENSORFLOW
+    bool isDifferentiableType(Type ty);
   };
 } // end anonymous namespace
 
@@ -1979,7 +1982,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
     TAK_convention, TAK_noreturn, TAK_pseudogeneric,
     TAK_callee_owned, TAK_callee_guaranteed, TAK_noescape, TAK_autoclosure,
     // SWIFT_ENABLE_TENSORFLOW
-    TAK_escaping, TAK_autodiff, TAK_yield_once, TAK_yield_many
+    TAK_escaping, TAK_autodiff, TAK_differentiable, TAK_yield_once, TAK_yield_many
   };
 
   auto checkUnsupportedAttr = [&](TypeAttrKind attr) {
@@ -2082,7 +2085,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
     SILFunctionType::ExtInfo extInfo(rep, attrs.has(TAK_pseudogeneric),
                                      // SWIFT_ENABLE_TENSORFLOW
                                      attrs.has(TAK_noescape),
-                                     attrs.has(TAK_autodiff));
+                                     attrs.has(TAK_autodiff) || attrs.has(TAK_differentiable));
 
     ty = resolveSILFunctionType(fnRepr, options, coroutineKind,
                                 extInfo, calleeConvention,
@@ -2143,7 +2146,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
                                   attrs.has(TAK_noescape),
                                   // SWIFT_ENABLE_TENSORFLOW
                                   fnRepr->throws(),
-                                  attrs.has(TAK_autodiff));
+                                  attrs.has(TAK_autodiff) || attrs.has(TAK_differentiable));
 
     ty = resolveASTFunctionType(fnRepr, options, extInfo);
     if (!ty || ty->hasError()) return ty;
@@ -2359,6 +2362,15 @@ bool TypeResolver::resolveASTFunctionTypeParams(
       }
     }
 
+    if (isDifferentiable &&
+        resolution.getStage() != TypeResolutionStage::Structural) {
+      if (!nondiff && !isDifferentiableType(ty)) {
+        diagnose(eltTypeRepr->getLoc(),
+                 diag::autodiff_attr_argument_not_differentiable)
+            .fixItInsert(eltTypeRepr->getLoc(), "@nondiff ");
+      }
+    }
+
     // SWIFT_ENABLE_TENSORFLOW
     ParameterTypeFlags paramFlags =
         ParameterTypeFlags::fromParameterType(ty, variadic, autoclosure,
@@ -2438,7 +2450,31 @@ Type TypeResolver::resolveASTFunctionType(FunctionTypeRepr *repr,
     break;
   }
 
+  // SWIFT_ENABLE_TENSORFLOW
+  // If the function is marked as `@differentiable`, the result must be a
+  // differentiable type.
+  if (extInfo.isDifferentiable() &&
+      resolution.getStage() != TypeResolutionStage::Structural) {
+    if (!isDifferentiableType(outputTy)) {
+      diagnose(repr->getResultTypeRepr()->getLoc(),
+               diag::autodiff_attr_result_not_differentiable)
+          .highlight(repr->getResultTypeRepr()->getSourceRange());
+    }
+  }
+
   return fnTy;
+}
+
+// SWIFT_ENABLE_TENSORFLOW
+bool TypeResolver::isDifferentiableType(Type ty) {
+  if (resolution.getStage() != TypeResolutionStage::Contextual) {
+    ty = DC->mapTypeIntoContext(ty);
+  }
+  return ty
+      ->getAutoDiffAssociatedVectorSpace(
+          AutoDiffAssociatedVectorSpaceKind::Tangent,
+          LookUpConformanceInModule(DC->getParentModule()))
+      .hasValue();
 }
 
 Type TypeResolver::resolveSILBoxType(SILBoxTypeRepr *repr,

@@ -1,13 +1,13 @@
 // RUN: %target-swift-frontend -emit-sil -verify %s | %FileCheck %s
 
 protocol Proto : Differentiable {
-  @differentiable()
+  @differentiable(wrt: (x, y))
   func function1(_ x: Float, _ y: Float) -> Float
 
   @differentiable(wrt: (self, x, y))
   func function2(_ x: Float, _ y: Float) -> Float
 
-  @differentiable(wrt: (y))
+  @differentiable(wrt: y)
   func function3(_ x: Float, _ y: Float) -> Float
 }
 
@@ -28,6 +28,7 @@ struct S : Proto, VectorNumeric {
     return (p, { dp in S(p: dp) })
   }
 
+  @differentiable(wrt: (x, y))
   func function1(_ x: Float, _ y: Float) -> Float {
     return x + y + p
   }
@@ -36,7 +37,7 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[JVP1_ORIG_FNREF:%.*]] = function_ref {{.*}}function1{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[JVP1_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function1{{.*}}__vjp_src_0_wrt_0_1
   // CHECK: [[JVP1_ADFUNC:%.*]] = autodiff_function [wrt 0 1] [order 1] [[JVP1_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[JVP1_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[JVP1:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP1_ADFUNC]] : $@autodiff @convention(method) (Float, Float, @nondiff S) -> Float
+  // CHECK: [[JVP1:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP1_ADFUNC]] : $@differentiable @convention(method) (Float, Float, @nondiff S) -> Float
   // CHECK: apply [[JVP1]]
   // CHECK: } // end sil function 'AD__{{.*}}function1{{.*}}_jvp_SSU'
 
@@ -44,10 +45,11 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[VJP1_ORIG_FNREF:%.*]] = function_ref {{.*}}function1{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[VJP1_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function1{{.*}}__vjp_src_0_wrt_0_1
   // CHECK: [[VJP1_ADFUNC:%.*]] = autodiff_function [wrt 0 1] [order 1] [[VJP1_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[VJP1_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[VJP1:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP1_ADFUNC]] : $@autodiff @convention(method) (Float, Float, @nondiff S) -> Float
+  // CHECK: [[VJP1:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP1_ADFUNC]] : $@differentiable @convention(method) (Float, Float, @nondiff S) -> Float
   // CHECK: apply [[VJP1]]
   // CHECK: } // end sil function 'AD__{{.*}}function1{{.*}}_vjp_SSU'
 
+  @differentiable(wrt: (self, x, y))
   func function2(_ x: Float, _ y: Float) -> Float {
     return x + y + p
   }
@@ -56,7 +58,7 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[JVP2_ORIG_FNREF:%.*]] = function_ref {{.*}}function2{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[JVP2_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function2{{.*}}__vjp_src_0_wrt_0_1_2
   // CHECK: [[JVP2_ADFUNC:%.*]] = autodiff_function [wrt 0 1 2] [order 1] [[JVP2_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[JVP2_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[JVP2:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP2_ADFUNC]] : $@autodiff @convention(method) (Float, Float, S) -> Float
+  // CHECK: [[JVP2:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP2_ADFUNC]] : $@differentiable @convention(method) (Float, Float, S) -> Float
   // CHECK: apply [[JVP2]]
   // CHECK: } // end sil function 'AD__{{.*}}function2{{.*}}_jvp_SSS'
 
@@ -64,10 +66,11 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[VJP2_ORIG_FNREF:%.*]] = function_ref {{.*}}function2{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[VJP2_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function2{{.*}}__vjp_src_0_wrt_0_1_2
   // CHECK: [[VJP2_ADFUNC:%.*]] = autodiff_function [wrt 0 1 2] [order 1] [[VJP2_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[VJP2_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[VJP2:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP2_ADFUNC]] : $@autodiff @convention(method) (Float, Float, S) -> Float
+  // CHECK: [[VJP2:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP2_ADFUNC]] : $@differentiable @convention(method) (Float, Float, S) -> Float
   // CHECK: apply [[VJP2]]
   // CHECK: } // end sil function 'AD__{{.*}}function2{{.*}}_vjp_SSS'
 
+  @differentiable(wrt: (y))
   func function3(_ x: Float, _ y: Float) -> Float {
     return x + y + p
   }
@@ -76,7 +79,7 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[JVP3_ORIG_FNREF:%.*]] = function_ref {{.*}}function3{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[JVP3_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function3{{.*}}__vjp_src_0_wrt_1
   // CHECK: [[JVP3_ADFUNC:%.*]] = autodiff_function [wrt 1] [order 1] [[JVP3_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[JVP3_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[JVP3:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP3_ADFUNC]] : $@autodiff @convention(method) (@nondiff Float, Float, @nondiff S) -> Float
+  // CHECK: [[JVP3:%.*]] = autodiff_function_extract [jvp] [order 1] [[JVP3_ADFUNC]] : $@differentiable @convention(method) (@nondiff Float, Float, @nondiff S) -> Float
   // CHECK: apply [[JVP3]]
   // CHECK: } // end sil function 'AD__{{.*}}function3{{.*}}_jvp_USU'
 
@@ -84,7 +87,7 @@ struct S : Proto, VectorNumeric {
   // CHECK: [[VJP3_ORIG_FNREF:%.*]] = function_ref {{.*}}function3{{.*}} : $@convention(method) (Float, Float, S) -> Float
   // CHECK: [[VJP3_VJP_FNREF:%.*]] = function_ref @AD__{{.*}}function3{{.*}}__vjp_src_0_wrt_1
   // CHECK: [[VJP3_ADFUNC:%.*]] = autodiff_function [wrt 1] [order 1] [[VJP3_ORIG_FNREF]] : {{.*}} with {{{%.*}} : {{.*}}, [[VJP3_VJP_FNREF]] : {{.*}}}
-  // CHECK: [[VJP3:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP3_ADFUNC]] : $@autodiff @convention(method) (@nondiff Float, Float, @nondiff S) -> Float
+  // CHECK: [[VJP3:%.*]] = autodiff_function_extract [vjp] [order 1] [[VJP3_ADFUNC]] : $@differentiable @convention(method) (@nondiff Float, Float, @nondiff S) -> Float
   // CHECK: apply [[VJP3]]
   // CHECK: } // end sil function 'AD__{{.*}}function3{{.*}}_vjp_USU'
 }

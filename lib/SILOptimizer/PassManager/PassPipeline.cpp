@@ -105,6 +105,9 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P,
   P.addClosureLifetimeFixup();
   P.addOwnershipModelEliminator();
   // SWIFT_ENABLE_TENSORFLOW
+  if (Options.SerializeForDifferentiation) {
+    P.addSerializeSILPass();
+  }
   P.addDifferentiation();
   P.addMandatoryInlining();
   P.addMandatorySILLinker();

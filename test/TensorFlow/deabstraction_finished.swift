@@ -110,8 +110,8 @@ public func tensorShape() -> Tensor<Float> {
 // initializers.
 public func test75407624() {
   let a = Tensor<Float>([1])
-  let b = Tensor<Float>(shape: [1], repeating: 1)
-  let c = Tensor<Float>(shape: [1], repeating: 1)
+  let b = Tensor<Float>(repeating: 1, shape: [1])
+  let c = Tensor<Float>(repeating: 1, shape: [1])
   let d = Tensor<Float>(shape: [2,2], scalars: [1,2,3,4])
   _ = a+b+c+d
 }
@@ -250,7 +250,7 @@ public func testTensorFlowClosures(_ a: Float) -> Tensor<Int32>{
 // CHECK: sil private {{.*}}testTensorFlowClosures{{.*}} : $@callee_owned (TensorHandle<Builtin.FPIEEE32>) -> TensorHandle<Int32> {
 // CHECK: bb0(%0 : @unowned $TensorHandle<Builtin.FPIEEE32>):
 // CHECK:  [[A:%.*]] = unchecked_ref_cast %0 : $TensorHandle<Builtin.FPIEEE32> to $TensorHandle<Float>
-// CHECK:  [[B:%.*]] = graph_op "Cast"([[A]] : $TensorHandle<Float>) {SrcT$dtype: i32 1, DstT$dtype: i32 3, __device: "/job:localhost/replica:0/task:0/device:CPU:0"} : $TensorHandle<Int32>
+// CHECK:  [[B:%.*]] = graph_op "Cast"([[A]] : $TensorHandle<Float>) {SrcT$dtype: i32 1, DstT$dtype: i32 3, Truncate: i1 0, __device: "/job:localhost/replica:0/task:0/device:CPU:0"} : $TensorHandle<Int32>
 // CHECK:  return [[B]] : $TensorHandle<Int32>
 // CHECK: } 
 
@@ -258,7 +258,7 @@ public func testTensorFlowClosures(_ a: Float) -> Tensor<Int32>{
 // sil private @[[NAME]] : $@callee_owned (TensorHandle<Builtin.FPIEEE32>) -> TensorHandle<Int32> {
 // bb0(%0 : @unowned $TensorHandle<Builtin.FPIEEE32>):
 //   [[A:%.*]] = unchecked_ref_cast %0 : $TensorHandle<Builtin.FPIEEE32> to $TensorHandle<Float>
-//   [[B:%.*]] = graph_op "Cast"([[A]] : $TensorHandle<Float>) {SrcT$dtype: i32 1, DstT: $Int32, __device: "/job:localhost/replica:0/task:0/device:CPU:0"} : $TensorHandle<Int32>
+//   [[B:%.*]] = graph_op "Cast"([[A]] : $TensorHandle<Float>) {SrcT$dtype: i32 1, DstT: $Int32, Truncate: i1 0, __device: "/job:localhost/replica:0/task:0/device:CPU:0"} : $TensorHandle<Int32>
 //   return [[B]] : $TensorHandle<Int32>
 // } // end sil function '[[NAME]]'
 

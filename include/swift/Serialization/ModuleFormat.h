@@ -52,7 +52,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 473; // Last change: serialize differentiation indices
+const uint16_t SWIFTMODULE_VERSION_MINOR = 474; // Last change: add parameter differentiability to SILFunctionType serialization
 
 using DeclIDField = BCFixed<31>;
 
@@ -274,6 +274,14 @@ enum class ParameterConvention : uint8_t {
 };
 using ParameterConventionField = BCFixed<4>;
 
+// SWIFT_ENABLE_TENSORFLOW
+// These IDs must \em not be renumbered or reordered without incrementing
+// the module version.
+enum class SILParameterDifferentiability : uint8_t {
+  DifferentiableOrNotApplicable,
+  NotDifferentiable,
+};
+
 // These IDs must \em not be renumbered or reordered without incrementing
 // the module version.
 enum class ResultConvention : uint8_t {
@@ -300,7 +308,7 @@ enum class SelfAccessKind : uint8_t {
   __Consuming,
 };
 using SelfAccessKindField = BCFixed<2>;
-  
+
 /// Translates an operator DeclKind to a Serialization fixity, whose values are
 /// guaranteed to be stable.
 static inline OperatorKind getStableFixity(DeclKind kind) {
@@ -828,12 +836,14 @@ namespace decls_block {
     BCFixed<30>,           // number of yields
     BCFixed<30>,           // number of results
     GenericSignatureIDField, // generic signature
-    BCArray<TypeIDField>   // parameter types/conventions, alternating
+    // SWIFT_ENABLE_TENSORFLOW
+    BCArray<TypeIDField>   // for each parameter: type, convention, and (if
+                           // function is differentiable) differentiability,
                            // followed by result types/conventions, alternating
                            // followed by error result type/convention
     // Optionally a protocol conformance (for witness_methods)
   >;
-  
+
   using SILBlockStorageTypeLayout = BCRecordLayout<
     SIL_BLOCK_STORAGE_TYPE,
     TypeIDField            // capture type
@@ -1441,13 +1451,13 @@ namespace decls_block {
     BCBlob      // _silgen_name
   >;
 
-  
+
   using AlignmentDeclAttrLayout = BCRecordLayout<
     Alignment_DECL_ATTR,
     BCFixed<1>, // implicit flag
     BCFixed<31> // alignment
   >;
-  
+
   using SwiftNativeObjCRuntimeBaseDeclAttrLayout = BCRecordLayout<
     SwiftNativeObjCRuntimeBase_DECL_ATTR,
     BCFixed<1>, // implicit flag
@@ -1596,6 +1606,14 @@ namespace decls_block {
     BCArray<BCFixed<1>> // Differentiation parameter indices' bitvector.
   >;
 
+  // SWIFT_ENABLE_TENSORFLOW
+  using DifferentiatingDeclAttrLayout = BCRecordLayout<
+    Differentiating_DECL_ATTR,
+    BCFixed<1>, // Implicit flag.
+    IdentifierIDField, // Original name.
+    DeclIDField // Original function declaration.
+  >;
+
 #define SIMPLE_DECL_ATTR(X, CLASS, ...) \
   using CLASS##DeclAttrLayout = BCRecordLayout< \
     CLASS##_DECL_ATTR, \
@@ -1699,7 +1717,7 @@ namespace index_block {
     SUBSTITUTION_MAP_OFFSETS,
     LastRecordKind = SUBSTITUTION_MAP_OFFSETS,
   };
-  
+
   constexpr const unsigned RecordIDFieldWidth = 5;
   static_assert(LastRecordKind < (1 << RecordIDFieldWidth),
                 "not enough bits for all record kinds");

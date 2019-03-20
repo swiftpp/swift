@@ -573,18 +573,17 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
   // SWIFT_ENABLE_TENSORFLOW
   case DAK_Differentiable: {
     Printer.printAttrName("@differentiable");
-    Printer << '(';
     auto *attr = cast<DifferentiableAttr>(this);
     auto parsedParams = attr->getParsedParameters();
-
+    // If no attribute parameter is specified, do not print parentheses at all.
+    if (parsedParams.empty() && !attr->getJVP() && !attr->getVJP() &&
+        !attr->getWhereClause())
+      break;
+    Printer << '(';
     // Get original function.
     auto *original = dyn_cast_or_null<AbstractFunctionDecl>(D);
-    bool isProperty = original && isa<AccessorDecl>(original);
-    if (auto *varDecl = dyn_cast_or_null<VarDecl>(D)) {
-      isProperty = true;
+    if (auto *varDecl = dyn_cast_or_null<VarDecl>(D))
       original = varDecl->getGetter();
-    }
-    bool isMethod = original && original->getImplicitSelfDecl() ? true : false;
 
     // Print comma if not leading clause.
     bool isLeadingClause = true;
@@ -598,29 +597,24 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
 
     // Print differentiation parameters, if any.
     if (auto indices = attr->getParameterIndices()) {
-      printCommaIfNecessary();
-      Printer << "wrt: (";
-      interleave(indices->parameters.set_bits(), [&](unsigned index) {
-        if (isProperty || (isMethod && index == indices->parameters.size() - 1))
-          Printer << "self";
-        else
-          Printer << original->getParameters()->get(index)->getName().str();
-      }, [&] { Printer << ", "; });
-      Printer << ")";
-    } else if (!parsedParams.empty()) {
-      printCommaIfNecessary();
-      Printer << "wrt: (";
-      interleave(parsedParams, [&](const ParsedAutoDiffParameter &param) {
-        switch (param.getKind()) {
-        case ParsedAutoDiffParameter::Kind::Named:
-          Printer << '.' << param.getName();
-          break;
-        case ParsedAutoDiffParameter::Kind::Self:
-          Printer << "self";
-          break;
-        }
-      }, [&] { Printer << ", "; });
-      Printer << ")";
+      if (!parsedParams.empty()) {
+        printCommaIfNecessary();
+        Printer << "wrt: ";
+        if (parsedParams.size() > 1)
+          Printer << '(';
+        interleave(parsedParams, [&](const ParsedAutoDiffParameter &param) {
+          switch (param.getKind()) {
+          case ParsedAutoDiffParameter::Kind::Named:
+            Printer << param.getName();
+            break;
+          case ParsedAutoDiffParameter::Kind::Self:
+            Printer << "self";
+            break;
+          }
+        }, [&]{ Printer << ", "; });
+        if (parsedParams.size() > 1)
+          Printer << ')';
+      }
     }
     // Print jvp function name.
     if (auto jvp = attr->getJVP()) {
@@ -662,7 +656,17 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
         Printer << ", ";
       });
     }
-    Printer << ")";
+    Printer << ')';
+    break;
+  }
+
+  // SWIFT_ENABLE_TENSORFLOW
+  case DAK_Differentiating: {
+    Printer.printAttrName("@differentiating");
+    Printer << '(';
+    auto *attr = cast<DifferentiatingAttr>(this);
+    Printer << attr->getOriginal().Name;
+    Printer << ')';
     break;
   }
 
@@ -803,6 +807,8 @@ StringRef DeclAttribute::getAttrName() const {
   // SWIFT_ENABLE_TENSORFLOW
   case DAK_Differentiable:
     return "differentiable";
+  case DAK_Differentiating:
+    return "differentiating";
   }
   llvm_unreachable("bad DeclAttrKind");
 }
@@ -1220,6 +1226,23 @@ DifferentiableAttr::create(ASTContext &context, bool implicit,
 void DifferentiableAttr::setRequirements(ASTContext &context,
                                          ArrayRef<Requirement> requirements) {
   Requirements = context.AllocateCopy(requirements);
+}
+
+// SWIFT_ENABLE_TENSORFLOW
+DifferentiatingAttr::DifferentiatingAttr(ASTContext &context, bool implicit,
+                                         SourceLoc atLoc, SourceRange baseRange,
+                                         DeclNameWithLoc original)
+  : DeclAttribute(DAK_Differentiating, atLoc, baseRange, implicit),
+    Original(std::move(original)) {}
+
+DifferentiatingAttr *
+DifferentiatingAttr::create(ASTContext &context, bool implicit,
+                            SourceLoc atLoc, SourceRange baseRange,
+                            DeclNameWithLoc original) {
+  void *mem = context.Allocate(sizeof(DifferentiatingAttr),
+                               alignof(DifferentiatingAttr));
+  return new (mem) DifferentiatingAttr(context, implicit, atLoc, baseRange,
+                                       std::move(original));
 }
 
 ImplementsAttr::ImplementsAttr(SourceLoc atLoc, SourceRange range,

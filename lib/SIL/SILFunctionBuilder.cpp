@@ -35,8 +35,6 @@ SILFunction *SILFunctionBuilder::getOrCreateFunction(
   return fn;
 }
 
-
-// SWIFT_ENABLE_TENSORFLOW
 void SILFunctionBuilder::addFunctionAttributes(SILFunction *F,
                                                DeclAttributes &Attrs,
                                                SILModule &M,
@@ -75,41 +73,25 @@ void SILFunctionBuilder::addFunctionAttributes(SILFunction *F,
   // - Non-getter accessors (setters, modifiers, etc).
   // - Default argument generator functions.
   // - Thunks. Those are currently handled in SILGenThunk.cpp.
-  if ((!isa<AccessorDecl>(decl) || dyn_cast<AccessorDecl>(decl)->isGetter()) &&
+  if ((!isa<AccessorDecl>(decl) || cast<AccessorDecl>(decl)->isGetter()) &&
       constant.kind != SILDeclRef::Kind::DefaultArgGenerator &&
       !constant.autoDiffAssociatedFunctionIdentifier &&
+      !constant.isStoredPropertyInitializer() &&
       !constant.isThunk()) {
     for (auto *A : Attrs.getAttributes<DifferentiableAttr>()) {
-      auto *DA = cast<DifferentiableAttr>(A);
       std::string jvpName, vjpName;
-      // Note: the following alternative implementations of `isSameModule` don't
-      // work under all scenarios:
-      // - `F->isDefinition()`
-      // - `forDefinition` (passed from `getOrCreateFunction`)
-      bool isSameModule = M.getSwiftModule() == decl->getModuleContext();
-      // Get JVP/VJP names. If the functions aren't specified, use the expected
-      // mangled name. Differentiation pass ensures that JVP and VJP exist.
-      if (auto *jvpFn = DA->getJVPFunction())
+      // Get JVP/VJP names.
+      if (auto *jvpFn = A->getJVPFunction())
         jvpName = SILDeclRef(jvpFn).mangle();
-      else if (!isSameModule)
-        jvpName = constant.asAutoDiffAssociatedFunction(
-            AutoDiffAssociatedFunctionIdentifier::get(
-                AutoDiffAssociatedFunctionKind::JVP, /*differentiationOrder*/ 1,
-                DA->getParameterIndices(), F->getASTContext())).mangle();
-      if (auto *vjpFn = DA->getVJPFunction())
+      if (auto *vjpFn = A->getVJPFunction())
         vjpName = SILDeclRef(vjpFn).mangle();
-      else if (!isSameModule)
-        vjpName = constant.asAutoDiffAssociatedFunction(
-            AutoDiffAssociatedFunctionIdentifier::get(
-                AutoDiffAssociatedFunctionKind::VJP, /*differentiationOrder*/ 1,
-                DA->getParameterIndices(), F->getASTContext())).mangle();
       // Get lowered argument indices.
-      auto paramIndices = DA->getParameterIndices();
-      auto loweredIndices = paramIndices->getLowered(
+      auto paramIndices = A->getParameterIndices();
+      auto loweredParamIndices = paramIndices->getLowered(
           decl->getInterfaceType()->castTo<AnyFunctionType>());
-      SILAutoDiffIndices indices(/*source*/ 0, loweredIndices);
+      SILAutoDiffIndices indices(/*source*/ 0, loweredParamIndices);
       auto silDiffAttr = SILDifferentiableAttr::create(
-          M, indices, DA->getRequirements(), M.allocateCopy(jvpName),
+          M, indices, A->getRequirements(), M.allocateCopy(jvpName),
           M.allocateCopy(vjpName));
       F->addDifferentiableAttr(silDiffAttr);
     }

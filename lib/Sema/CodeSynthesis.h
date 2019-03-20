@@ -49,7 +49,7 @@ void makeFinal(ASTContext &ctx, ValueDecl *D);
 bool checkOverrides(ValueDecl *decl);
 
 // SWIFT_ENABLE_TENSORFLOW
-// Made public so that DerivedConformanceParameterized can call it.
+// Made public for use in DerivedConformanceDifferentiable.cpp.
 void addExpectedOpaqueAccessorsToStorage(AbstractStorageDecl *storage,
                                          ASTContext &ctx);
 

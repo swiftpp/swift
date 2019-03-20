@@ -73,66 +73,63 @@ static ValueDecl *getProtocolRequirement(ProtocolDecl *proto, Identifier name) {
                               }),
                lookup.end());
   assert(lookup.size() == 1 && "Ambiguous protocol requirement");
-  return lookup[0];
+  return lookup.front();
 }
 
-// Return the `Scalar` associated type for a ValueDecl if it conforms to
-// `VectorNumeric` in the given context.
-// If the decl does not conform to `VectorNumeric`, return a null `Type`.
-static Type getVectorNumericScalarAssocType(VarDecl *decl, DeclContext *DC) {
-  auto &C = decl->getASTContext();
+// Return the `Scalar` associated type for the given `ValueDecl` if it conforms
+// to `VectorNumeric` in the given context. Otherwise, return `nullptr`.
+static Type getVectorNumericScalarAssocType(VarDecl *varDecl, DeclContext *DC) {
+  auto &C = varDecl->getASTContext();
   auto *vectorNumericProto = C.getProtocol(KnownProtocolKind::VectorNumeric);
-  if (!decl->hasType())
-    C.getLazyResolver()->resolveDeclSignature(decl);
-  if (!decl->hasType())
-    return Type();
-  auto declType = decl->getType()->hasArchetype()
-                      ? decl->getType()
-                      : DC->mapTypeIntoContext(decl->getType());
-  auto conf = TypeChecker::conformsToProtocol(declType, vectorNumericProto, DC,
+  if (!varDecl->hasInterfaceType())
+    C.getLazyResolver()->resolveDeclSignature(varDecl);
+  if (!varDecl->hasInterfaceType())
+    return nullptr;
+  auto varType = DC->mapTypeIntoContext(varDecl->getValueInterfaceType());
+  auto conf = TypeChecker::conformsToProtocol(varType, vectorNumericProto, DC,
                                               ConformanceCheckFlags::Used);
   if (!conf)
-    return Type();
+    return nullptr;
   Type scalarType = ProtocolConformanceRef::getTypeWitnessByName(
-      declType, *conf, C.Id_Scalar, C.getLazyResolver());
+      varType, *conf, C.Id_Scalar, C.getLazyResolver());
   assert(scalarType && "'Scalar' associated type not found");
   return scalarType;
 }
 
+// Return the `Scalar` associated type for the given nominal type in the given
+// context, or `nullptr` if `Scalar` cannot be derived.
 static Type deriveVectorNumeric_Scalar(NominalTypeDecl *nominal,
                                        DeclContext *DC) {
+  auto &C = DC->getASTContext();
   // Nominal type must be a struct. (Zero stored properties is okay.)
-  auto *structDecl = dyn_cast<StructDecl>(nominal);
-  auto &C = nominal->getASTContext();
-  if (!structDecl)
-    return Type();
+  if (!isa<StructDecl>(nominal))
+    return nullptr;
   // If all stored properties conform to `VectorNumeric` and have the same
   // `Scalar` associated type, return that `Scalar` associated type.
   // Otherwise, the `Scalar` type cannot be derived.
   Type sameScalarType;
-  for (auto member : structDecl->getStoredProperties()) {
+  for (auto member : nominal->getStoredProperties()) {
     if (!member->hasInterfaceType())
       C.getLazyResolver()->resolveDeclSignature(member);
     if (!member->hasInterfaceType())
-      return Type();
+      return nullptr;
     auto scalarType = getVectorNumericScalarAssocType(member, DC);
-    // If stored property does not conform to `VectorNumeric`, return null
-    // `Type`.
+    // If stored property does not conform to `VectorNumeric`, return nullptr.
     if (!scalarType)
-      return Type();
+      return nullptr;
     // If same `Scalar` type has not been set, set it for the first time.
     if (!sameScalarType) {
       sameScalarType = scalarType;
       continue;
     }
-    // If stored property `Scalar` types do not match, return null `Type`.
+    // If stored property `Scalar` types do not match, return nullptr.
     if (!scalarType->isEqual(sameScalarType))
-      return Type();
+      return nullptr;
   }
   return sameScalarType;
 }
 
-// Returns true if given nominal type has a `let` stored with an initial value.
+// Return true if given nominal type has a `let` stored with an initial value.
 static bool hasLetStoredPropertyWithInitialValue(NominalTypeDecl *nominal) {
   return llvm::any_of(nominal->getStoredProperties(), [&](VarDecl *v) {
     return v->isLet() && v->hasInitialValue();
@@ -155,14 +152,12 @@ bool DerivedConformance::canDeriveAdditiveArithmetic(NominalTypeDecl *nominal,
   auto &C = nominal->getASTContext();
   auto *addArithProto = C.getProtocol(KnownProtocolKind::AdditiveArithmetic);
   return llvm::all_of(structDecl->getStoredProperties(), [&](VarDecl *v) {
-    if (!v->hasInterfaceType() || !v->getType())
+    if (!v->hasInterfaceType())
       C.getLazyResolver()->resolveDeclSignature(v);
-    if (!v->hasInterfaceType() || !v->getType())
+    if (!v->hasInterfaceType())
       return false;
-    auto declType = v->getType()->hasArchetype()
-                        ? v->getType()
-                        : DC->mapTypeIntoContext(v->getType());
-    return (bool)TypeChecker::conformsToProtocol(declType, addArithProto, DC,
+    auto varType = DC->mapTypeIntoContext(v->getValueInterfaceType());
+    return (bool)TypeChecker::conformsToProtocol(varType, addArithProto, DC,
                                                  ConformanceCheckFlags::Used);
   });
 }
@@ -182,11 +177,13 @@ bool DerivedConformance::canDeriveVectorNumeric(NominalTypeDecl *nominal,
 // Synthesize body for the given math operator.
 static void deriveBodyMathOperator(AbstractFunctionDecl *funcDecl,
                                    MathOperator op) {
-  auto *nominal = funcDecl->getDeclContext()->getSelfNominalTypeDecl();
+  auto *parentDC = funcDecl->getParent();
+  auto *nominal = parentDC->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
   // Create memberwise initializer: `Nominal.init(...)`.
-  auto *memberwiseInitDecl = nominal->getMemberwiseInitializer();
+  auto *memberwiseInitDecl = nominal->getEffectiveMemberwiseInitializer();
+  assert(memberwiseInitDecl && "Memberwise initializer must exist");
   auto *initDRE =
       new (C) DeclRefExpr(memberwiseInitDecl, DeclNameLoc(), /*Implicit*/ true);
   initDRE->setFunctionRefKind(FunctionRefKind::SingleApply);
@@ -209,10 +206,8 @@ static void deriveBodyMathOperator(AbstractFunctionDecl *funcDecl,
   // Create expression combining lhs and rhs members using member operator.
   auto createMemberOpExpr = [&](VarDecl *member) -> Expr * {
     auto module = nominal->getModuleContext();
-    auto memberType = member->getType()->hasArchetype()
-                          ? member->getType()
-                          : nominal->mapTypeIntoContext(
-                                member->getType()->mapTypeOutOfContext());
+    auto memberType =
+        parentDC->mapTypeIntoContext(member->getValueInterfaceType());
     auto confRef = module->lookupConformance(memberType, proto);
     assert(confRef && "Member does not conform to math protocol");
 
@@ -223,13 +218,12 @@ static void deriveBodyMathOperator(AbstractFunctionDecl *funcDecl,
     // If conformance reference is concrete, then use concrete witness
     // declaration for the operator.
     if (confRef->isConcrete())
-      if (auto opDecl =
-              confRef->getConcrete()->getWitnessDecl(operatorReq, nullptr))
-        memberOpDecl = opDecl;
+      memberOpDecl = confRef->getConcrete()->getWitnessDecl(
+          operatorReq, C.getLazyResolver());
     assert(memberOpDecl && "Member operator declaration must exist");
     auto memberOpDRE =
         new (C) DeclRefExpr(memberOpDecl, DeclNameLoc(), /*Implicit*/ true);
-    auto *memberTypeExpr = TypeExpr::createImplicit(member->getType(), C);
+    auto *memberTypeExpr = TypeExpr::createImplicit(memberType, C);
     auto memberOpExpr =
         new (C) DotSyntaxCallExpr(memberOpDRE, SourceLoc(), memberTypeExpr);
 
@@ -296,8 +290,8 @@ deriveBodyVectorNumeric_scalarMultiply(AbstractFunctionDecl *funcDecl, void*) {
 static ValueDecl *deriveMathOperator(DerivedConformance &derived,
                                      MathOperator op) {
   auto nominal = derived.Nominal;
-  auto &C = derived.TC.Context;
   auto parentDC = derived.getConformanceContext();
+  auto &C = derived.TC.Context;
   auto selfInterfaceType = parentDC->getDeclaredInterfaceType();
 
   // Return tuple of the lhs and rhs parameter types for the given math
@@ -362,10 +356,12 @@ static ValueDecl *deriveMathOperator(DerivedConformance &derived,
 
 // Synthesize body for the `AdditiveArithmetic.zero` computed property getter.
 static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl, void*) {
-  auto *nominal = funcDecl->getDeclContext()->getSelfNominalTypeDecl();
+  auto *parentDC = funcDecl->getParent();
+  auto *nominal = parentDC->getSelfNominalTypeDecl();
   auto &C = nominal->getASTContext();
 
-  auto *memberwiseInitDecl = nominal->getMemberwiseInitializer();
+  auto *memberwiseInitDecl = nominal->getEffectiveMemberwiseInitializer();
+  assert(memberwiseInitDecl && "Memberwise initializer must exist");
   auto *initDRE =
       new (C) DeclRefExpr(memberwiseInitDecl, DeclNameLoc(), /*Implicit*/ true);
   initDRE->setFunctionRefKind(FunctionRefKind::SingleApply);
@@ -378,9 +374,11 @@ static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl, vo
   auto *zeroReq = getProtocolRequirement(addArithProto, C.Id_zero);
 
   auto createMemberZeroExpr = [&](VarDecl *member) -> Expr * {
-    auto *memberTypeExpr = TypeExpr::createImplicit(member->getType(), C);
+    auto memberType =
+        parentDC->mapTypeIntoContext(member->getValueInterfaceType());
+    auto *memberTypeExpr = TypeExpr::createImplicit(memberType, C);
     auto module = nominal->getModuleContext();
-    auto confRef = module->lookupConformance(member->getType(), addArithProto);
+    auto confRef = module->lookupConformance(memberType, addArithProto);
     assert(confRef && "Member does not conform to 'AdditiveArithmetic'");
     // If conformance reference is not concrete, then concrete witness
     // declaration for `zero` cannot be resolved. Return reference to `zero`
@@ -391,7 +389,7 @@ static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl, vo
     }
     // Otherwise, return reference to concrete witness declaration for `zero`.
     auto conf = confRef->getConcrete();
-    auto zeroDecl = conf->getWitnessDecl(zeroReq, nullptr);
+    auto zeroDecl = conf->getWitnessDecl(zeroReq, C.getLazyResolver());
     return new (C) MemberRefExpr(memberTypeExpr, SourceLoc(), zeroDecl,
                                  DeclNameLoc(), /*Implicit*/ true);
   };
@@ -413,23 +411,23 @@ static void deriveBodyAdditiveArithmetic_zero(AbstractFunctionDecl *funcDecl, vo
 
 // Synthesize the static property declaration for `AdditiveArithmetic.zero`.
 static ValueDecl *deriveAdditiveArithmetic_zero(DerivedConformance &derived) {
-  auto nominal = derived.Nominal;
+  auto *nominal = derived.Nominal;
+  auto *parentDC = derived.getConformanceContext();
   auto &TC = derived.TC;
   auto &C = TC.Context;
 
   // The implicit memberwise constructor must be explicitly created so that it
   // can called when synthesizing the `zero` property getter. Normally, the
   // memberwise constructor is synthesized during SILGen, which is too late.
-  if (!nominal->getMemberwiseInitializer()) {
+  if (!nominal->getEffectiveMemberwiseInitializer()) {
     auto *initDecl = createImplicitConstructor(
         TC, nominal, ImplicitConstructorKind::Memberwise);
-    nominal->addMember(initDecl);
+    derived.addMembersToConformanceContext(initDecl);
     C.addSynthesizedDecl(initDecl);
   }
 
   auto returnInterfaceTy = nominal->getDeclaredInterfaceType();
-  auto returnTy =
-      derived.getConformanceContext()->mapTypeIntoContext(returnInterfaceTy);
+  auto returnTy = parentDC->mapTypeIntoContext(returnInterfaceTy);
 
   // Create `zero` static property declaration.
   VarDecl *zeroDecl;

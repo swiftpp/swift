@@ -3244,7 +3244,7 @@ static ManagedValue createThunk(SILGenFunction &SGF,
 }
 
 // SWIFT_ENABLE_TENSORFLOW
-/// Create a reabstraction thunk for an @autodiff function.
+/// Create a reabstraction thunk for an @differentiable function.
 static ManagedValue createAutoDiffThunk(SILGenFunction &SGF,
                                         SILLocation loc,
                                         ManagedValue fn,

@@ -64,9 +64,11 @@ public:
   }
 
   bool isEqual(const ParsedAutoDiffParameter &other) const {
-    if (getKind() == other.getKind() && getKind() == Kind::Named)
+    if (getKind() != other.getKind())
+      return false;
+    if (getKind() == Kind::Named)
       return getName() == other.getName();
-    return getKind() == other.getKind() && getKind() == Kind::Self;
+    return getKind() == Kind::Self;
   }
 };
 
@@ -197,6 +199,12 @@ public:
   /// `AutoDiffParameterIndices::parameters` for documentation about the order.
   void setParameter(unsigned parameterIndex);
 
+  /// Sets the parameters at indices in the specified range.
+  void setParameters(unsigned lowerBound, unsigned upperBound);
+
+  /// Sets all parameters.
+  void setAllParameters();
+
   /// Returns the number of parameters.
   unsigned size() { return parameters.size(); }
 };
@@ -291,7 +299,7 @@ struct AutoDiffAssociatedFunctionKind {
 class AutoDiffAssociatedFunctionIdentifier : public llvm::FoldingSetNode {
   const AutoDiffAssociatedFunctionKind kind;
   const unsigned differentiationOrder;
-  AutoDiffParameterIndices * const parameterIndices;
+  AutoDiffParameterIndices *const parameterIndices;
 
   AutoDiffAssociatedFunctionIdentifier(
       AutoDiffAssociatedFunctionKind kind, unsigned differentiationOrder,
@@ -347,7 +355,7 @@ getNumAutoDiffAssociatedFunctions(unsigned differentiationOrder);
 bool getBuiltinAutoDiffApplyConfig(StringRef operationName,
                                    AutoDiffAssociatedFunctionKind &kind,
                                    unsigned &arity, unsigned &order,
-                                   bool &rethrows, bool &isMethod);
+                                   bool &rethrows);
 } // end namespace autodiff
 
 class BuiltinFloatType;
@@ -359,10 +367,12 @@ class VectorSpace {
 public:
   /// A tangent space kind.
   enum class Kind {
-    /// A type that conforms to `VectorNumeric`.
+    /// A type that conforms to `AdditiveArithmetic`.
     Vector,
     /// A product of vector spaces as a tuple.
     Tuple,
+    /// A function type whose innermost result conforms to `AdditiveArithmetic`.
+    Function
   };
 
 private:
@@ -372,9 +382,12 @@ private:
     Type vectorType;
     // Tuple
     TupleType *tupleType;
+    // Function
+    AnyFunctionType *functionType;
 
     Value(Type vectorType) : vectorType(vectorType) {}
     Value(TupleType *tupleType) : tupleType(tupleType) {}
+    Value(AnyFunctionType *functionType) : functionType(functionType) {}
   } value;
 
   VectorSpace(Kind kind, Value value)
@@ -389,6 +402,9 @@ public:
   static VectorSpace getTuple(TupleType *tupleTy) {
     return {Kind::Tuple, tupleTy};
   }
+  static VectorSpace getFunction(AnyFunctionType *fnTy) {
+    return {Kind::Function, fnTy};
+  }
 
   bool isVector() const { return kind == Kind::Vector; }
   bool isTuple() const { return kind == Kind::Tuple; }
@@ -401,6 +417,10 @@ public:
   TupleType *getTuple() const {
     assert(kind == Kind::Tuple);
     return value.tupleType;
+  }
+  AnyFunctionType *getFunction() const {
+    assert(kind == Kind::Function);
+    return value.functionType;
   }
 
   Type getType() const;
