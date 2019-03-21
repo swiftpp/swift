@@ -108,8 +108,9 @@ deriveKeyPathIterable_allKeyPaths(DerivedConformance &derived) {
       C.Id_allKeyPaths, returnInterfaceTy, returnTy, /*isStatic*/ false,
       /*isFinal*/ true);
 
-  // Add `@inlinable` to the `allKeyPaths` declaration.
-  if (nominal->getEffectiveAccess() > AccessLevel::Internal)
+  // Add `@inlinable` to the `allKeyPaths` declaration if nominal is public or
+  // `@usableFromInline`.
+  if (nominal->getEffectiveAccess() > AccessLevel::Public)
     allKeyPathsDecl->getAttrs().add(new (C) InlinableAttr(/*implicit*/ true));
 
   // Create `allKeyPaths` getter.
