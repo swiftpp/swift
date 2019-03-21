@@ -2055,7 +2055,8 @@ extension FloatingPoint where Self : Differentiable,
   /// result and pullback of `squareRoot` with respect to `self`.
   @inlinable // FIXME(sil-serialize-all)
   func _vjpSquareRoot() -> (Self, (Self) -> Self) {
-    return (squareRoot(), { v in 2 * self * v })
+    let y = squareRoot()
+    return (y, { v in v / (2 * y) })
   }
 }
 

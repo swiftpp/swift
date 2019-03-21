@@ -71,7 +71,7 @@ public protocol __Differentiable {
   /// The type of all differentiable variables in this type.
   associatedtype AllDifferentiableVariables : Differentiable
 
-  /// All differentiable variables in this type.
+  /// All differentiable variables of this value.
   var allDifferentiableVariables: AllDifferentiableVariables { get set }
 
   /// Returns `self` moved along the value space towards the given tangent
@@ -96,6 +96,9 @@ public protocol _Differentiable : __Differentiable
 
 /// A type that mathematically represents a differentiable manifold whose
 /// tangent spaces are finite-dimensional.
+// BEGIN DIFFERENTIABLE
+// - Note: these marks are identified during API doc generation and the
+//   contents are replaced with the ideal `Differentiable` protocol design.
 public protocol Differentiable : _Differentiable
   where TangentVector.TangentVector == TangentVector,
         TangentVector.CotangentVector == CotangentVector,
@@ -106,6 +109,7 @@ public protocol Differentiable : _Differentiable
         AllDifferentiableVariables.TangentVector == TangentVector,
         AllDifferentiableVariables.CotangentVector == CotangentVector {
 }
+// END DIFFERENTIABLE
 
 public extension Differentiable where AllDifferentiableVariables == Self {
   var allDifferentiableVariables: AllDifferentiableVariables {
@@ -141,11 +145,12 @@ public func differentiableFunction<T : Differentiable, R : Differentiable>(
   from vjp: @escaping (T)
            -> (value: R, pullback: (R.CotangentVector) -> T.CotangentVector)
 ) -> @differentiable (T) -> R {
-  @differentiable(vjp: _vjp)
   func original(_ x: T) -> R {
     return vjp(x).value
   }
-  func _vjp(_ x: T) -> (R, (R.CotangentVector) -> T.CotangentVector) {
+  @differentiating(original)
+  func derivative(_ x: T)
+    -> (value: R, pullback: (R.CotangentVector) -> T.CotangentVector) {
     return vjp(x)
   }
   return original
@@ -159,12 +164,14 @@ public func differentiableFunction<T, U, R>(
              -> (T.CotangentVector, U.CotangentVector))
 ) -> @differentiable (T, U) -> R
   where T : Differentiable, U : Differentiable, R : Differentiable {
-  @differentiable(vjp: _vjp)
   func original(_ x: T, _ y: U) -> R {
     return vjp(x, y).value
   }
-  func _vjp(_ x: T, _ y: U)
-    -> (R, (R.CotangentVector) -> (T.CotangentVector, U.CotangentVector)) {
+  @differentiating(original)
+  func derivative(_ x: T, _ y: U)
+    -> (value: R,
+        pullback: (R.CotangentVector)
+                    -> (T.CotangentVector, U.CotangentVector)) {
     return vjp(x, y)
   }
   return original

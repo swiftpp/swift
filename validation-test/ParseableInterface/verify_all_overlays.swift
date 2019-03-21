@@ -10,6 +10,16 @@
 // The following parseable interfaces (in alphabetical order) are known not to
 // work with these settings.
 
+// Needs to be built as Swift 4.2.
+macosx: CloudKit.swiftinterface
+ios: CloudKit.swiftinterface
+tvos: CloudKit.swiftinterface
+watchos: CloudKit.swiftinterface
+
+// This is added because DifferentiationUnittest does not build with resilience.
+linux-gnu: DifferentiationUnittest.swiftinterface
+macosx: DifferentiationUnittest.swiftinterface
+
 // SWIFT_ENABLE_TENSORFLOW
 linux-gnu: Python.swiftinterface
 macosx: Python.swiftinterface

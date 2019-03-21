@@ -69,6 +69,7 @@ public extension Tensor where Scalar : Numeric {
 //===----------------------------------------------------------------------===//
 
 extension Tensor : AdditiveArithmetic where Scalar : Numeric {
+  /// A scalar zero tensor.
   @inlinable
   public static var zero: Tensor {
     @inline(__always)
@@ -780,6 +781,7 @@ public extension Tensor where Scalar : SignedNumeric {
 
 /// Computes the absolute value of the specified tensor element-wise.
 @inlinable @inline(__always)
+@differentiable(vjp: _vjpAbs(_:) where T : TensorFlowFloatingPoint)
 public func abs<T : SignedNumeric>(_ x: Tensor<T>) -> Tensor<T> {
   return Raw.abs(x)
 }

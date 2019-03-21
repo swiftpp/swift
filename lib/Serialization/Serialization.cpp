@@ -2204,6 +2204,8 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
   case DAK_RestatedObjCConformance:
   case DAK_ClangImporterSynthesizedType:
   case DAK_PrivateImport:
+  // SWIFT_ENABLE_TENSORFLOW
+  case DAK_Differentiating:
     llvm_unreachable("cannot serialize attribute");
 
   case DAK_Count:
@@ -2407,18 +2409,6 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
         jvpName, jvpRef, vjpName, vjpRef, indices);
 
     writeGenericRequirements(attr->getRequirements(), DeclTypeAbbrCodes);
-    return;
-  }
-
-  // SWIFT_ENABLE_TENSORFLOW
-  case DAK_Differentiating: {
-    auto abbrCode = DeclTypeAbbrCodes[DifferentiatingDeclAttrLayout::Code];
-    auto attr = cast<DifferentiatingAttr>(DA);
-    IdentifierID origName =
-        addDeclBaseNameRef(attr->getOriginal().Name.getBaseName());
-    DeclID origRef = addDeclRef(attr->getOriginalFunction());
-    DifferentiatingDeclAttrLayout::emitRecord(
-        Out, ScratchRecord, abbrCode, attr->isImplicit(), origName, origRef);
     return;
   }
   }
