@@ -2041,7 +2041,7 @@ static CanSILFunctionType buildThunkType(SILFunction *fn,
   // Does the thunk type involve an open existential type?
   CanArchetypeType openedExistential;
   auto archetypeVisitor = [&](CanType t) {
-    if (auto archetypeTy = dyn_cast<ArchetypeType>(t)) {
+    if (auto archetypeTy = dyn_cast<OpenedArchetypeType>(t)) {
       if (archetypeTy->getOpenedExistentialType()) {
         assert((openedExistential == CanArchetypeType() ||
                 openedExistential == archetypeTy) &&
@@ -2179,7 +2179,7 @@ static SILFunction *getOrCreateReabstractionThunk(SILOptFunctionBuilder &fb,
     return thunk;
 
   thunk->setGenericEnvironment(genericEnv);
-  thunk->setUnqualifiedOwnership();
+  thunk->setOwnershipEliminated();
   auto *entry = thunk->createBasicBlock();
   SILBuilder builder(entry);
   createEntryArguments(thunk);
@@ -5767,7 +5767,7 @@ SILValue ADContext::promoteToDifferentiableFunction(
         }
         retInst->eraseFromParent();
 
-        newF->setUnqualifiedOwnership();
+        newF->setOwnershipEliminated();
 
         if (processAutoDiffFunctionInst(adfi)) {
           return nullptr;
